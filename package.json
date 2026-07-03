@@ -1,0 +1,70 @@
+{
+  "name": "xr18-ai-controller",
+  "version": "1.0.0",
+  "description": "AI-powered controller for Behringer XR18/X32/M32 mixers",
+  "main": "electron/main.js",
+  "author": "Jorge Moreno",
+  "license": "MIT",
+  "scripts": {
+    "backend:install": "cd backend && pip install -r requirements.txt",
+    "frontend:install": "cd frontend && npm install",
+    "install:all": "npm run backend:install && npm run frontend:install && npm install",
+    "backend:dev": "cd backend && python -m app.main",
+    "frontend:dev": "cd frontend && npm run dev",
+    "electron:dev": "electron .",
+    "dev": "concurrently \"npm run backend:dev\" \"npm run frontend:dev\" \"wait-on http://localhost:8000 http://localhost:5173 && npm run electron:dev\"",
+    "frontend:build": "cd frontend && npm run build",
+    "build": "npm run frontend:build && electron-builder",
+    "build:win": "npm run frontend:build && electron-builder --win",
+    "build:mac": "npm run frontend:build && electron-builder --mac",
+    "build:linux": "npm run frontend:build && electron-builder --linux"
+  },
+  "dependencies": {
+    "electron-squirrel-startup": "^1.0.0"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "electron": "^28.1.0",
+    "electron-builder": "^24.9.1",
+    "wait-on": "^7.2.0"
+  },
+  "build": {
+    "appId": "com.jorgem.xr18-ai-controller",
+    "productName": "XR18 AI Controller",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "electron/**/*",
+      "frontend/dist/**/*",
+      "backend/**/*",
+      "!backend/**/__pycache__",
+      "!backend/**/*.pyc"
+    ],
+    "extraResources": [
+      {
+        "from": "backend",
+        "to": "backend",
+        "filter": ["**/*", "!**/__pycache__", "!**/*.pyc"]
+      }
+    ],
+    "win": {
+      "target": ["nsis"],
+      "icon": "installer/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "mac": {
+      "category": "public.app-category.music",
+      "target": ["dmg"]
+    },
+    "linux": {
+      "target": ["AppImage"],
+      "category": "Audio"
+    }
+  }
+}
