@@ -62,6 +62,15 @@ class MuteControl(BaseModel):
     mute: bool
 
 
+class AIConfigModel(BaseModel):
+    maxThreshold: float
+    targetLevel: float
+    minThreshold: float
+    historyWindow: int
+    confidenceThreshold: float
+    adjustmentSpeed: float
+
+
 # API Endpoints
 
 @app.get("/")
@@ -184,6 +193,65 @@ async def configure_channel(config: ChannelConfigModel):
         "status": "configured",
         "channel": config.channel
     }
+
+
+@app.post("/api/ai/config")
+async def update_ai_config(config: AIConfigModel):
+    """Update global AI configuration"""
+    global ai_controller
+
+    if mixer_adapter and mixer_adapter.mixer_info:
+        for ch in range(1, mixer_adapter.mixer_info.channels + 1):
+            channel_config = ChannelConfig(
+                channel=ch,
+                max_threshold_db=config.maxThreshold,
+                target_level_db=config.targetLevel,
+                min_threshold_db=config.minThreshold,
+                auto_adjust_enabled=True,
+                adjustment_speed=config.adjustmentSpeed
+            )
+            ai_controller.configure_channel(channel_config)
+
+        ai_controller.history_window = config.historyWindow
+
+        return {
+            "status": "success",
+            "message": "AI configuration updated for all channels",
+            "config": {
+                "max_threshold": config.maxThreshold,
+                "target_level": config.targetLevel,
+                "min_threshold": config.minThreshold,
+                "history_window": config.historyWindow,
+                "confidence_threshold": config.confidenceThreshold,
+                "adjustment_speed": config.adjustmentSpeed
+            }
+        }
+    else:
+        raise HTTPException(status_code=400, detail="No mixer connected")
+
+
+@app.get("/api/ai/config")
+async def get_ai_config():
+    """Get current AI configuration"""
+    if ai_controller.channels_config:
+        sample_ch = list(ai_controller.channels_config.values())[0]
+        return {
+            "maxThreshold": sample_ch.max_threshold_db,
+            "targetLevel": sample_ch.target_level_db,
+            "minThreshold": sample_ch.min_threshold_db,
+            "historyWindow": ai_controller.history_window,
+            "confidenceThreshold": 0.7,
+            "adjustmentSpeed": sample_ch.adjustment_speed if hasattr(sample_ch, 'adjustment_speed') else 0.8
+        }
+    else:
+        return {
+            "maxThreshold": -6.0,
+            "targetLevel": -12.0,
+            "minThreshold": -40.0,
+            "historyWindow": 100,
+            "confidenceThreshold": 0.7,
+            "adjustmentSpeed": 0.8
+        }
 
 
 @app.post("/api/channel/fader")
