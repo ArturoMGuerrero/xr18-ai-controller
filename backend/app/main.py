@@ -13,6 +13,7 @@ from .adapters import BehringerAdapter
 from .ai_controller import AIAudioController, ChannelConfig, AIDecision
 from .storage.learning_storage import LearningStorage
 from .services.logger import setup_logging, get_logger
+from .services.alert_engine import AlertEngine, AlertConfig, AlertType, AlertSeverity
 
 # Initialize logging
 logger = setup_logging(log_level=settings.log_level)
@@ -39,6 +40,7 @@ ai_controller = AIAudioController(history_window=settings.ai_history_window)
 ai_enabled = False
 active_websockets: List[WebSocket] = []
 learning_storage = LearningStorage(data_dir=settings.learning_data_dir)
+alert_engine = AlertEngine()
 
 
 # Pydantic models
@@ -620,6 +622,119 @@ async def import_preset(preset_data: dict):
         raise HTTPException(status_code=400, detail=f"Invalid preset data: {str(e)}")
 
 
+# ==================== Alert System ====================
+
+@app.get("/api/alerts/history")
+async def get_alert_history(limit: Optional[int] = 100):
+    """Get alert history"""
+    return {
+        "status": "success",
+        "alerts": alert_engine.get_alert_history(limit=limit),
+        "total": len(alert_engine.alert_history)
+    }
+
+
+@app.get("/api/alerts/channel/{channel}")
+async def get_channel_alerts(channel: int):
+    """Get alerts for specific channel"""
+    return {
+        "status": "success",
+        "channel": channel,
+        "alerts": alert_engine.get_alerts_by_channel(channel)
+    }
+
+
+@app.get("/api/alerts/type/{alert_type}")
+async def get_alerts_by_type(alert_type: str):
+    """Get alerts by type"""
+    try:
+        alert_type_enum = AlertType(alert_type)
+        return {
+            "status": "success",
+            "type": alert_type,
+            "alerts": alert_engine.get_alerts_by_type(alert_type_enum)
+        }
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid alert type: {alert_type}")
+
+
+class AlertConfigUpdate(BaseModel):
+    clipping_threshold_db: Optional[float] = None
+    clipping_consecutive_samples: Optional[int] = None
+    low_signal_threshold_db: Optional[float] = None
+    low_signal_duration_sec: Optional[float] = None
+    noise_floor_std_dev_threshold: Optional[float] = None
+    noise_floor_duration_sec: Optional[float] = None
+    sudden_drop_threshold_db: Optional[float] = None
+    sudden_drop_time_window_sec: Optional[float] = None
+    alert_cooldown_sec: Optional[float] = None
+
+
+@app.get("/api/alerts/config")
+async def get_alert_config():
+    """Get current alert configuration"""
+    config = alert_engine.config
+    return {
+        "status": "success",
+        "config": {
+            "clipping_threshold_db": config.clipping_threshold_db,
+            "clipping_consecutive_samples": config.clipping_consecutive_samples,
+            "low_signal_threshold_db": config.low_signal_threshold_db,
+            "low_signal_duration_sec": config.low_signal_duration_sec,
+            "noise_floor_std_dev_threshold": config.noise_floor_std_dev_threshold,
+            "noise_floor_duration_sec": config.noise_floor_duration_sec,
+            "sudden_drop_threshold_db": config.sudden_drop_threshold_db,
+            "sudden_drop_time_window_sec": config.sudden_drop_time_window_sec,
+            "alert_cooldown_sec": config.alert_cooldown_sec
+        }
+    }
+
+
+@app.post("/api/alerts/config")
+async def update_alert_config(config_update: AlertConfigUpdate):
+    """Update alert configuration"""
+    current_config = alert_engine.config
+
+    # Update only provided fields
+    if config_update.clipping_threshold_db is not None:
+        current_config.clipping_threshold_db = config_update.clipping_threshold_db
+    if config_update.clipping_consecutive_samples is not None:
+        current_config.clipping_consecutive_samples = config_update.clipping_consecutive_samples
+    if config_update.low_signal_threshold_db is not None:
+        current_config.low_signal_threshold_db = config_update.low_signal_threshold_db
+    if config_update.low_signal_duration_sec is not None:
+        current_config.low_signal_duration_sec = config_update.low_signal_duration_sec
+    if config_update.noise_floor_std_dev_threshold is not None:
+        current_config.noise_floor_std_dev_threshold = config_update.noise_floor_std_dev_threshold
+    if config_update.noise_floor_duration_sec is not None:
+        current_config.noise_floor_duration_sec = config_update.noise_floor_duration_sec
+    if config_update.sudden_drop_threshold_db is not None:
+        current_config.sudden_drop_threshold_db = config_update.sudden_drop_threshold_db
+    if config_update.sudden_drop_time_window_sec is not None:
+        current_config.sudden_drop_time_window_sec = config_update.sudden_drop_time_window_sec
+    if config_update.alert_cooldown_sec is not None:
+        current_config.alert_cooldown_sec = config_update.alert_cooldown_sec
+
+    alert_engine.update_config(current_config)
+
+    return {
+        "status": "success",
+        "message": "Alert configuration updated"
+    }
+
+
+@app.delete("/api/alerts/history")
+async def clear_alert_history():
+    """Clear all alert history"""
+    alert_engine.clear_history()
+
+    return {
+        "status": "success",
+        "message": "Alert history cleared"
+    }
+
+
+
 @app.websocket("/ws/meters")
 async def websocket_meters(websocket: WebSocket):
     """WebSocket for real-time meter updates and AI control"""
@@ -638,6 +753,18 @@ async def websocket_meters(websocket: WebSocket):
 
             channels = await mixer_adapter.get_all_channels()
             decisions = []
+            alerts = []
+
+            # Check for alerts on all channels
+            for ch in channels:
+                stats = ai_controller.get_channel_stats(ch.channel)
+                channel_alerts = alert_engine.check_for_alerts(
+                    channel=ch.channel,
+                    current_db=ch.level_db,
+                    stats=stats,
+                    sample_rate_hz=1000 / settings.ws_refresh_rate_ms
+                )
+                alerts.extend(channel_alerts)
 
             if ai_enabled:
                 for ch in channels:
@@ -679,7 +806,18 @@ async def websocket_meters(websocket: WebSocket):
                     }
                     for ch in channels
                 ],
-                "ai_decisions": decisions
+                "ai_decisions": decisions,
+                "alerts": [
+                    {
+                        "alert_id": alert.alert_id,
+                        "type": alert.alert_type.value,
+                        "severity": alert.severity.value,
+                        "channel": alert.channel,
+                        "message": alert.message,
+                        "suggested_action": alert.suggested_action
+                    }
+                    for alert in alerts
+                ]
             })
 
             await asyncio.sleep(settings.ws_refresh_rate_ms / 1000)

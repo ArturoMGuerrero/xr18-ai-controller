@@ -1,23 +1,35 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { ChannelInfo } from '../types';
 
+interface BackendAlert {
+  alert_id: string;
+  type: string;
+  severity: string;
+  channel: number;
+  message: string;
+  suggested_action?: string;
+}
+
 interface Alert {
   id: string;
-  type: 'clipping' | 'low-level' | 'muted' | 'ai-intervention';
+  type: 'clipping' | 'low-level' | 'muted' | 'ai-intervention' | 'clipping_risk' | 'low_signal' | 'noise_floor' | 'sudden_drop';
   channel?: number;
   message: string;
   timestamp: number;
   urgency: 'low' | 'medium' | 'high' | 'critical';
+  suggestedAction?: string;
 }
 
 interface AlertSystemProps {
   channels: ChannelInfo[];
+  backendAlerts?: BackendAlert[];  // Alerts from backend via WebSocket
   soundEnabled?: boolean;
   notificationsEnabled?: boolean;
 }
 
 export const AlertSystem: React.FC<AlertSystemProps> = ({
   channels,
+  backendAlerts = [],
   soundEnabled = true,
   notificationsEnabled = false,
 }) => {
@@ -106,42 +118,30 @@ export const AlertSystem: React.FC<AlertSystemProps> = ({
     setAlerts([]);
   }, []);
 
-  // Monitor channels for issues
+  // Process backend alerts
   useEffect(() => {
-    channels.forEach((ch) => {
-      // Clipping alert
-      if (ch.level_db > settings.clippingThreshold) {
-        const existingClipping = alerts.find(
-          (a) => a.type === 'clipping' && a.channel === ch.channel && Date.now() - a.timestamp < 1000
-        );
+    backendAlerts.forEach((backendAlert) => {
+      // Check if we already have this alert
+      const existingAlert = alerts.find((a) => a.id === backendAlert.alert_id);
 
-        if (!existingClipping) {
-          addAlert({
-            type: 'clipping',
-            channel: ch.channel,
-            message: `CH ${ch.channel} (${ch.name}) clipping at ${ch.level_db.toFixed(1)}dB!`,
-            urgency: ch.level_db > -1 ? 'critical' : 'high',
-          });
-        }
-      }
+      if (!existingAlert) {
+        // Map backend severity to urgency
+        const urgencyMap: Record<string, Alert['urgency']> = {
+          'info': 'low',
+          'warning': 'medium',
+          'critical': 'critical'
+        };
 
-      // Low level alert
-      if (ch.level_db < settings.lowLevelThreshold && ch.level_db > -60) {
-        const existingLow = alerts.find(
-          (a) => a.type === 'low-level' && a.channel === ch.channel && Date.now() - a.timestamp < 5000
-        );
-
-        if (!existingLow) {
-          addAlert({
-            type: 'low-level',
-            channel: ch.channel,
-            message: `CH ${ch.channel} (${ch.name}) very low at ${ch.level_db.toFixed(1)}dB`,
-            urgency: 'low',
-          });
-        }
+        addAlert({
+          type: backendAlert.type as Alert['type'],
+          channel: backendAlert.channel,
+          message: backendAlert.message,
+          urgency: urgencyMap[backendAlert.severity] || 'medium',
+          suggestedAction: backendAlert.suggested_action
+        });
       }
     });
-  }, [channels, settings, alerts, addAlert]);
+  }, [backendAlerts, alerts, addAlert]);
 
   const requestNotificationPermission = useCallback(async () => {
     if ('Notification' in window && Notification.permission === 'default') {
@@ -152,13 +152,19 @@ export const AlertSystem: React.FC<AlertSystemProps> = ({
   const getAlertIcon = (type: Alert['type']) => {
     switch (type) {
       case 'clipping':
+      case 'clipping_risk':
         return '🔴';
       case 'low-level':
+      case 'low_signal':
         return '🔵';
       case 'muted':
         return '🔇';
       case 'ai-intervention':
         return '🤖';
+      case 'noise_floor':
+        return '📉';
+      case 'sudden_drop':
+        return '⚡';
       default:
         return '⚠️';
     }
@@ -233,9 +239,14 @@ export const AlertSystem: React.FC<AlertSystemProps> = ({
               >
                 <div className="flex items-start space-x-3">
                   <span className="text-xl">{getAlertIcon(alert.type)}</span>
-                  <div>
+                  <div className="flex-1">
                     <div className="text-sm text-white">{alert.message}</div>
-                    <div className="text-xs text-gray-400">
+                    {alert.suggestedAction && (
+                      <div className="text-xs text-yellow-400 mt-1">
+                        💡 {alert.suggestedAction}
+                      </div>
+                    )}
+                    <div className="text-xs text-gray-400 mt-1">
                       {new Date(alert.timestamp).toLocaleTimeString()}
                     </div>
                   </div>
