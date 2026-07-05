@@ -1,10 +1,12 @@
-"""AI-powered audio level controller"""
+"""AI-powered audio level controller with learning capabilities"""
 
 import numpy as np
-from typing import Dict, List, Optional
-from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass, asdict
 from collections import deque
 import asyncio
+import json
+from datetime import datetime
 
 
 @dataclass
@@ -16,6 +18,28 @@ class ChannelConfig:
     min_threshold_db: float = -40.0
     auto_adjust_enabled: bool = True
     adjustment_speed: float = 0.8  # 0.0 (slow) to 1.0 (fast)
+
+
+@dataclass
+class ManualAdjustment:
+    """Record of manual user adjustment for learning"""
+    channel: int
+    timestamp: float
+    previous_level_db: float
+    previous_fader: float
+    new_fader: float
+    level_after_db: Optional[float] = None
+
+
+@dataclass
+class MixerPreset:
+    """Saved mixer configuration preset"""
+    name: str
+    description: str
+    created_at: str
+    channel_configs: Dict[int, ChannelConfig]
+    fader_positions: Dict[int, float]
+    mute_states: Dict[int, bool]
 
 
 @dataclass
@@ -33,16 +57,20 @@ class AIDecision:
 class AIAudioController:
     """
     Intelligent audio level controller using statistical analysis
-    and pattern recognition to automatically adjust mixer levels
+    and pattern recognition with learning capabilities
     """
 
-    def __init__(self, history_window: int = 100):
+    def __init__(self, history_window: int = 100, learning_enabled: bool = True):
         self.history_window = history_window
+        self.learning_enabled = learning_enabled
+
         self.level_history: Dict[int, deque] = {}
         self.adjustment_history: Dict[int, deque] = {}
         self.peak_history: Dict[int, deque] = {}
+        self.manual_adjustments: List[ManualAdjustment] = []
 
         self.channels_config: Dict[int, ChannelConfig] = {}
+        self.learned_patterns: Dict[int, Dict] = {}  # Channel-specific learned behavior
 
     def configure_channel(self, config: ChannelConfig):
         """Configure a channel for AI control"""
@@ -285,3 +313,261 @@ class AIAudioController:
         self.level_history.clear()
         self.adjustment_history.clear()
         self.peak_history.clear()
+
+    # ==================== Learning Mode ====================
+
+    def record_manual_adjustment(
+        self,
+        channel: int,
+        previous_level_db: float,
+        previous_fader: float,
+        new_fader: float
+    ):
+        """
+        Record a manual adjustment for learning purposes
+
+        Args:
+            channel: Channel number
+            previous_level_db: Level before adjustment
+            previous_fader: Fader position before adjustment
+            new_fader: New fader position after adjustment
+        """
+        if not self.learning_enabled:
+            return
+
+        adjustment = ManualAdjustment(
+            channel=channel,
+            timestamp=datetime.now().timestamp(),
+            previous_level_db=previous_level_db,
+            previous_fader=previous_fader,
+            new_fader=new_fader
+        )
+
+        self.manual_adjustments.append(adjustment)
+
+        # Keep only last 500 adjustments
+        if len(self.manual_adjustments) > 500:
+            self.manual_adjustments = self.manual_adjustments[-500:]
+
+        # Learn from adjustment
+        self._learn_from_adjustment(adjustment)
+
+    def _learn_from_adjustment(self, adjustment: ManualAdjustment):
+        """
+        Analyze manual adjustment and update learned patterns
+
+        Args:
+            adjustment: Manual adjustment record
+        """
+        channel = adjustment.channel
+
+        if channel not in self.learned_patterns:
+            self.learned_patterns[channel] = {
+                'preferred_level_range': [],
+                'typical_adjustments': [],
+                'response_style': 'moderate'  # aggressive, moderate, conservative
+            }
+
+        # Calculate adjustment magnitude
+        fader_change = adjustment.new_fader - adjustment.previous_fader
+        db_equivalent = 20 * np.log10(adjustment.new_fader / max(adjustment.previous_fader, 0.01))
+
+        self.learned_patterns[channel]['typical_adjustments'].append({
+            'level_db': adjustment.previous_level_db,
+            'fader_change': fader_change,
+            'db_change': db_equivalent
+        })
+
+        # Keep only last 100 adjustments per channel
+        if len(self.learned_patterns[channel]['typical_adjustments']) > 100:
+            self.learned_patterns[channel]['typical_adjustments'] = \
+                self.learned_patterns[channel]['typical_adjustments'][-100:]
+
+        # Determine user's response style
+        if len(self.learned_patterns[channel]['typical_adjustments']) >= 10:
+            recent_changes = [
+                abs(a['fader_change'])
+                for a in self.learned_patterns[channel]['typical_adjustments'][-10:]
+            ]
+            avg_change = np.mean(recent_changes)
+
+            if avg_change > 0.15:
+                self.learned_patterns[channel]['response_style'] = 'aggressive'
+            elif avg_change < 0.05:
+                self.learned_patterns[channel]['response_style'] = 'conservative'
+            else:
+                self.learned_patterns[channel]['response_style'] = 'moderate'
+
+    def apply_learned_behavior(self, channel: int, decision: AIDecision) -> AIDecision:
+        """
+        Modify AI decision based on learned user preferences
+
+        Args:
+            channel: Channel number
+            decision: Original AI decision
+
+        Returns:
+            Modified decision incorporating learned behavior
+        """
+        if not self.learning_enabled or channel not in self.learned_patterns:
+            return decision
+
+        patterns = self.learned_patterns[channel]
+        response_style = patterns['response_style']
+
+        # Adjust decision based on learned style
+        if decision.suggested_fader is not None:
+            if response_style == 'aggressive':
+                # User prefers larger adjustments - amplify the change
+                if decision.action == 'reduce':
+                    decision.suggested_fader *= 0.95  # Reduce more
+                elif decision.action == 'increase':
+                    decision.suggested_fader *= 1.05  # Increase more
+
+            elif response_style == 'conservative':
+                # User prefers smaller adjustments - dampen the change
+                if decision.action == 'reduce':
+                    decision.suggested_fader = (decision.suggested_fader + 1.0) / 2  # Less reduction
+                elif decision.action == 'increase':
+                    decision.suggested_fader = (decision.suggested_fader + 0.75) / 2  # Less increase
+
+        # Adjust urgency based on user behavior
+        if response_style == 'conservative' and decision.urgency == 'high':
+            decision.urgency = 'medium'
+        elif response_style == 'aggressive' and decision.urgency == 'medium':
+            decision.urgency = 'high'
+
+        return decision
+
+    def get_learning_stats(self, channel: Optional[int] = None) -> Dict:
+        """
+        Get learning statistics
+
+        Args:
+            channel: Specific channel or None for all channels
+
+        Returns:
+            Dictionary with learning statistics
+        """
+        if channel is not None:
+            if channel in self.learned_patterns:
+                return {
+                    'channel': channel,
+                    'adjustments_recorded': len(self.learned_patterns[channel]['typical_adjustments']),
+                    'response_style': self.learned_patterns[channel]['response_style'],
+                    'has_learned_behavior': len(self.learned_patterns[channel]['typical_adjustments']) >= 10
+                }
+            else:
+                return {'channel': channel, 'adjustments_recorded': 0, 'has_learned_behavior': False}
+
+        # All channels
+        return {
+            'total_adjustments': len(self.manual_adjustments),
+            'channels_with_learning': len(self.learned_patterns),
+            'channels': {
+                ch: {
+                    'adjustments': len(patterns['typical_adjustments']),
+                    'style': patterns['response_style']
+                }
+                for ch, patterns in self.learned_patterns.items()
+            }
+        }
+
+    # ==================== Preset Management ====================
+
+    def create_preset(
+        self,
+        name: str,
+        description: str,
+        fader_positions: Dict[int, float],
+        mute_states: Dict[int, bool]
+    ) -> MixerPreset:
+        """
+        Create a mixer preset with current configuration
+
+        Args:
+            name: Preset name
+            description: Preset description
+            fader_positions: Current fader positions
+            mute_states: Current mute states
+
+        Returns:
+            Created preset
+        """
+        preset = MixerPreset(
+            name=name,
+            description=description,
+            created_at=datetime.now().isoformat(),
+            channel_configs={
+                ch: config for ch, config in self.channels_config.items()
+            },
+            fader_positions=fader_positions.copy(),
+            mute_states=mute_states.copy()
+        )
+
+        return preset
+
+    def load_preset(self, preset: MixerPreset):
+        """
+        Load a mixer preset
+
+        Args:
+            preset: Preset to load
+        """
+        # Load channel configurations
+        for channel, config in preset.channel_configs.items():
+            self.configure_channel(config)
+
+    def export_preset_json(self, preset: MixerPreset) -> str:
+        """
+        Export preset to JSON string
+
+        Args:
+            preset: Preset to export
+
+        Returns:
+            JSON string
+        """
+        preset_dict = {
+            'name': preset.name,
+            'description': preset.description,
+            'created_at': preset.created_at,
+            'channel_configs': {
+                str(ch): asdict(config) for ch, config in preset.channel_configs.items()
+            },
+            'fader_positions': {str(ch): pos for ch, pos in preset.fader_positions.items()},
+            'mute_states': {str(ch): muted for ch, muted in preset.mute_states.items()}
+        }
+
+        return json.dumps(preset_dict, indent=2)
+
+    def import_preset_json(self, json_str: str) -> MixerPreset:
+        """
+        Import preset from JSON string
+
+        Args:
+            json_str: JSON string
+
+        Returns:
+            Imported preset
+        """
+        data = json.loads(json_str)
+
+        channel_configs = {}
+        for ch_str, config_dict in data['channel_configs'].items():
+            channel = int(ch_str)
+            channel_configs[channel] = ChannelConfig(**config_dict)
+
+        fader_positions = {int(ch): pos for ch, pos in data['fader_positions'].items()}
+        mute_states = {int(ch): muted for ch, muted in data['mute_states'].items()}
+
+        preset = MixerPreset(
+            name=data['name'],
+            description=data['description'],
+            created_at=data['created_at'],
+            channel_configs=channel_configs,
+            fader_positions=fader_positions,
+            mute_states=mute_states
+        )
+
+        return preset

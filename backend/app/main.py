@@ -6,10 +6,17 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict
 import asyncio
 import time
+import json
 
 from .config import settings
 from .adapters import BehringerAdapter
 from .ai_controller import AIAudioController, ChannelConfig, AIDecision
+from .storage.learning_storage import LearningStorage
+from .services.logger import setup_logging, get_logger
+
+# Initialize logging
+logger = setup_logging(log_level=settings.log_level)
+logger.info("Starting XR18 AI Controller application")
 
 app = FastAPI(
     title="XR18 AI Controller",
@@ -31,6 +38,7 @@ mixer_adapter: Optional[BehringerAdapter] = None
 ai_controller = AIAudioController(history_window=settings.ai_history_window)
 ai_enabled = False
 active_websockets: List[WebSocket] = []
+learning_storage = LearningStorage(data_dir=settings.learning_data_dir)
 
 
 # Pydantic models
@@ -266,16 +274,37 @@ async def set_fader(control: FaderControl):
     if not mixer_adapter or not mixer_adapter.connected:
         raise HTTPException(status_code=400, detail="Not connected to mixer")
 
-    success = await mixer_adapter.set_channel_fader(control.channel, control.value)
+    # Get current state before adjustment for learning
+    channels = await mixer_adapter.get_all_channels()
+    current_channel = next((ch for ch in channels if ch.channel == control.channel), None)
 
-    if success:
-        return {
-            "status": "success",
-            "channel": control.channel,
-            "value": control.value
-        }
+    if current_channel:
+        previous_level = current_channel.level_db
+        previous_fader = current_channel.fader_value
+
+        # Apply fader change
+        success = await mixer_adapter.set_channel_fader(control.channel, control.value)
+
+        if success:
+            # Record manual adjustment for learning
+            if ai_controller.learning_enabled:
+                ai_controller.record_manual_adjustment(
+                    channel=control.channel,
+                    previous_level_db=previous_level,
+                    previous_fader=previous_fader,
+                    new_fader=control.value
+                )
+
+            return {
+                "status": "success",
+                "channel": control.channel,
+                "value": control.value,
+                "learning_recorded": ai_controller.learning_enabled
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Failed to set fader")
     else:
-        raise HTTPException(status_code=500, detail="Failed to set fader")
+        raise HTTPException(status_code=404, detail="Channel not found")
 
 
 @app.post("/api/channel/mute")
@@ -325,6 +354,272 @@ async def get_all_channels():
     }
 
 
+# ==================== Learning Mode ====================
+
+class LearningConfig(BaseModel):
+    enabled: bool
+
+
+@app.post("/api/learning/enable")
+async def set_learning_mode(config: LearningConfig):
+    """Enable or disable learning mode"""
+    ai_controller.learning_enabled = config.enabled
+    return {
+        "learning_enabled": config.enabled,
+        "message": "Learning mode " + ("enabled" if config.enabled else "disabled")
+    }
+
+
+@app.get("/api/learning/status")
+async def get_learning_status():
+    """Get learning mode status and statistics"""
+    return {
+        "learning_enabled": ai_controller.learning_enabled,
+        "stats": ai_controller.get_learning_stats()
+    }
+
+
+@app.get("/api/learning/stats/{channel}")
+async def get_channel_learning_stats(channel: int):
+    """Get learning statistics for a specific channel"""
+    return ai_controller.get_learning_stats(channel)
+
+
+@app.post("/api/learning/save")
+async def save_learning_data():
+    """Save current learning data to JSON file"""
+    try:
+        filepath = learning_storage.save_learning_data(ai_controller)
+        return {
+            "status": "success",
+            "message": "Learning data saved",
+            "filepath": filepath
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save learning data: {str(e)}")
+
+
+@app.get("/api/learning/export")
+async def export_learning_data():
+    """Export learning data as JSON for download"""
+    try:
+        json_str = learning_storage.export_learning_data_json(ai_controller)
+        return {
+            "status": "success",
+            "data": json.loads(json_str)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to export learning data: {str(e)}")
+
+
+class LearningDataImport(BaseModel):
+    data: dict
+
+
+@app.post("/api/learning/import")
+async def import_learning_data(import_data: LearningDataImport):
+    """Import learning data from JSON"""
+    try:
+        json_str = json.dumps(import_data.data)
+        success = learning_storage.import_learning_data_json(ai_controller, json_str)
+
+        if success:
+            return {
+                "status": "success",
+                "message": "Learning data imported successfully"
+            }
+        else:
+            raise HTTPException(status_code=400, detail="Failed to import learning data")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Import error: {str(e)}")
+
+
+@app.get("/api/learning/history")
+async def get_learning_history():
+    """List all saved learning data files"""
+    try:
+        files = learning_storage.list_learning_files()
+        return {
+            "status": "success",
+            "files": files,
+            "count": len(files)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list learning files: {str(e)}")
+
+
+class LearningFileLoad(BaseModel):
+    filename: str
+
+
+@app.post("/api/learning/load")
+async def load_learning_file(load_data: LearningFileLoad):
+    """Load learning data from a specific file"""
+    try:
+        filepath = learning_storage.data_dir / load_data.filename
+        success = learning_storage.load_learning_data(ai_controller, str(filepath))
+
+        if success:
+            return {
+                "status": "success",
+                "message": f"Learning data loaded from {load_data.filename}"
+            }
+        else:
+            raise HTTPException(status_code=400, detail="Failed to load learning data")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Load error: {str(e)}")
+
+
+# ==================== Preset Management ====================
+
+# In-memory preset storage (would be database in production)
+presets_storage: Dict[str, dict] = {}
+
+
+class PresetCreate(BaseModel):
+    name: str
+    description: str
+
+
+class PresetApply(BaseModel):
+    name: str
+
+
+@app.post("/api/presets/save")
+async def save_preset(preset_data: PresetCreate):
+    """Save current mixer configuration as preset"""
+    if not mixer_adapter or not mixer_adapter.connected:
+        raise HTTPException(status_code=400, detail="Not connected to mixer")
+
+    # Get current mixer state
+    channels = await mixer_adapter.get_all_channels()
+
+    fader_positions = {ch.channel: ch.fader_value for ch in channels}
+    mute_states = {ch.channel: ch.muted for ch in channels}
+
+    # Create preset
+    preset = ai_controller.create_preset(
+        name=preset_data.name,
+        description=preset_data.description,
+        fader_positions=fader_positions,
+        mute_states=mute_states
+    )
+
+    # Export to JSON and store
+    preset_json = ai_controller.export_preset_json(preset)
+    presets_storage[preset_data.name] = json.loads(preset_json)
+
+    return {
+        "status": "success",
+        "message": f"Preset '{preset_data.name}' saved",
+        "preset": {
+            "name": preset.name,
+            "description": preset.description,
+            "created_at": preset.created_at,
+            "channels": len(preset.fader_positions)
+        }
+    }
+
+
+@app.post("/api/presets/load")
+async def load_preset(preset_apply: PresetApply):
+    """Load and apply a saved preset"""
+    if not mixer_adapter or not mixer_adapter.connected:
+        raise HTTPException(status_code=400, detail="Not connected to mixer")
+
+    if preset_apply.name not in presets_storage:
+        raise HTTPException(status_code=404, detail=f"Preset '{preset_apply.name}' not found")
+
+    # Import preset from JSON
+    preset_json = json.dumps(presets_storage[preset_apply.name])
+    preset = ai_controller.import_preset_json(preset_json)
+
+    # Load AI configuration
+    ai_controller.load_preset(preset)
+
+    # Apply fader positions and mute states
+    for channel, fader in preset.fader_positions.items():
+        await mixer_adapter.set_channel_fader(channel, fader)
+
+    for channel, muted in preset.mute_states.items():
+        await mixer_adapter.mute_channel(channel, muted)
+
+    return {
+        "status": "success",
+        "message": f"Preset '{preset_apply.name}' loaded and applied",
+        "preset": {
+            "name": preset.name,
+            "description": preset.description,
+            "channels_configured": len(preset.fader_positions)
+        }
+    }
+
+
+@app.get("/api/presets/list")
+async def list_presets():
+    """List all saved presets"""
+    presets_list = [
+        {
+            "name": data["name"],
+            "description": data["description"],
+            "created_at": data["created_at"],
+            "channels": len(data["fader_positions"])
+        }
+        for data in presets_storage.values()
+    ]
+
+    return {
+        "count": len(presets_list),
+        "presets": presets_list
+    }
+
+
+@app.delete("/api/presets/{name}")
+async def delete_preset(name: str):
+    """Delete a saved preset"""
+    if name not in presets_storage:
+        raise HTTPException(status_code=404, detail=f"Preset '{name}' not found")
+
+    del presets_storage[name]
+
+    return {
+        "status": "success",
+        "message": f"Preset '{name}' deleted"
+    }
+
+
+@app.get("/api/presets/export/{name}")
+async def export_preset(name: str):
+    """Export preset as JSON file"""
+    if name not in presets_storage:
+        raise HTTPException(status_code=404, detail=f"Preset '{name}' not found")
+
+    return presets_storage[name]
+
+
+@app.post("/api/presets/import")
+async def import_preset(preset_data: dict):
+    """Import preset from JSON"""
+    try:
+        preset_json = json.dumps(preset_data)
+        preset = ai_controller.import_preset_json(preset_json)
+
+        # Store preset
+        presets_storage[preset.name] = preset_data
+
+        return {
+            "status": "success",
+            "message": f"Preset '{preset.name}' imported",
+            "preset": {
+                "name": preset.name,
+                "description": preset.description,
+                "channels": len(preset.fader_positions)
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid preset data: {str(e)}")
+
+
 @app.websocket("/ws/meters")
 async def websocket_meters(websocket: WebSocket):
     """WebSocket for real-time meter updates and AI control"""
@@ -348,6 +643,10 @@ async def websocket_meters(websocket: WebSocket):
                 for ch in channels:
                     if ch.level_db > -60:
                         decision = ai_controller.analyze_level(ch.channel, ch.level_db)
+
+                        # Apply learned behavior if learning is enabled
+                        if ai_controller.learning_enabled:
+                            decision = ai_controller.apply_learned_behavior(ch.channel, decision)
 
                         if decision.action == 'reduce' or decision.action == 'increase':
                             if decision.suggested_fader is not None:

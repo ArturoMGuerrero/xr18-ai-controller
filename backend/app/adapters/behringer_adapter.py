@@ -6,8 +6,20 @@ from pythonosc import udp_client, dispatcher, osc_server
 from pythonosc.osc_message import OscMessage
 import threading
 import time
+import logging
 
 from .base_adapter import MixerAdapter, MixerInfo, ChannelInfo
+from ..services.osc_validator import (
+    validate_meter_data,
+    validate_fader_value,
+    validate_channel_number,
+    validate_mute_state,
+    validate_channel_name,
+    parse_channel_from_path,
+    sanitize_osc_path,
+    OSCValidationError
+)
+from ..services.logger import get_logger
 
 
 class BehringerAdapter(MixerAdapter):
@@ -59,6 +71,10 @@ class BehringerAdapter(MixerAdapter):
 
         self.meter_callbacks: List[Callable] = []
         self.keepalive_task: Optional[asyncio.Task] = None
+        self.last_keepalive_sent: float = 0.0
+
+        # Logger
+        self.logger = get_logger()
 
     async def connect(self, ip: str, port: Optional[int] = None) -> bool:
         """Connect to Behringer mixer"""
@@ -217,14 +233,20 @@ class BehringerAdapter(MixerAdapter):
             return f"/ch/{channel:02d}/{parameter}"
 
     def _handle_meters(self, address: str, *args):
-        """Handle meter messages"""
+        """Handle meter messages with validation"""
         try:
+            # Sanitize OSC path
+            address = sanitize_osc_path(address)
+
             if args and len(args) > 0:
                 meter_data = args[0] if isinstance(args[0], (list, tuple)) else args
 
+                # Validate meter data
+                validated_data = validate_meter_data(meter_data)
+
                 # XR18: channels 0-15 in meter array
                 # X32/M32: channels 0-31 in meter array
-                for idx, value in enumerate(meter_data):
+                for idx, value in enumerate(validated_data):
                     if idx < self.model_info["channels"]:
                         channel = idx + 1
                         db_value = self.linear_to_db(value) if value > 0 else -float('inf')
@@ -234,38 +256,65 @@ class BehringerAdapter(MixerAdapter):
                         for callback in self.meter_callbacks:
                             callback(channel, db_value)
 
+        except OSCValidationError as e:
+            self.logger.warning(f"Invalid meter data: {e}", extra={"context": {"address": address}})
         except Exception as e:
-            print(f"Error handling meters: {e}")
+            self.logger.error(f"Error handling meters: {e}", exc_info=True)
 
     def _handle_fader(self, address: str, *args):
-        """Handle fader change messages"""
+        """Handle fader change messages with validation"""
         try:
-            parts = address.split("/")
-            channel = int(parts[2])
+            # Parse and validate channel from path
+            channel = parse_channel_from_path(address)
+
             if args:
-                self.fader_values[channel] = args[0]
+                # Validate fader value
+                fader_value = validate_fader_value(args[0])
+                self.fader_values[channel] = fader_value
+
+                self.logger.debug(f"Fader update: Ch{channel} = {fader_value:.3f}")
+
+        except OSCValidationError as e:
+            self.logger.warning(f"Invalid fader data: {e}", extra={"context": {"address": address}})
         except Exception as e:
-            print(f"Error handling fader: {e}")
+            self.logger.error(f"Error handling fader: {e}", exc_info=True)
 
     def _handle_channel_name(self, address: str, *args):
-        """Handle channel name messages"""
+        """Handle channel name messages with validation"""
         try:
-            parts = address.split("/")
-            channel = int(parts[2])
+            # Parse and validate channel from path
+            channel = parse_channel_from_path(address)
+
             if args:
-                self.channel_names[channel] = args[0]
+                # Validate and sanitize name
+                name = validate_channel_name(args[0])
+                self.channel_names[channel] = name
+
+                self.logger.debug(f"Channel name: Ch{channel} = '{name}'")
+
+        except OSCValidationError as e:
+            self.logger.warning(f"Invalid channel name: {e}", extra={"context": {"address": address}})
         except Exception as e:
-            print(f"Error handling channel name: {e}")
+            self.logger.error(f"Error handling channel name: {e}", exc_info=True)
 
     def _handle_mute(self, address: str, *args):
-        """Handle mute state messages"""
+        """Handle mute state messages with validation"""
         try:
-            parts = address.split("/")
-            channel = int(parts[2])
+            # Parse and validate channel from path
+            channel = parse_channel_from_path(address)
+
             if args:
-                self.mute_states[channel] = (args[0] == 0)
+                # Validate mute state
+                mute = validate_mute_state(args[0])
+                # Note: XR18 uses 0=muted, 1=unmuted
+                self.mute_states[channel] = (mute == 0)
+
+                self.logger.debug(f"Mute state: Ch{channel} = {self.mute_states[channel]}")
+
+        except OSCValidationError as e:
+            self.logger.warning(f"Invalid mute state: {e}", extra={"context": {"address": address}})
         except Exception as e:
-            print(f"Error handling mute: {e}")
+            self.logger.error(f"Error handling mute: {e}", exc_info=True)
 
     def _handle_default(self, address: str, *args):
         """Handle unmatched OSC messages"""
@@ -276,12 +325,33 @@ class BehringerAdapter(MixerAdapter):
         while self.connected:
             try:
                 self.client.send_message("/xremote", None)
+                self.last_keepalive_sent = time.time()
                 await asyncio.sleep(9)
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 print(f"Keepalive error: {e}")
-                await asyncio.sleep(9)
+                self.connected = False  # Mark as disconnected on error
+                break
+
+    def is_healthy(self) -> bool:
+        """
+        Check if connection is healthy
+
+        Returns:
+            True if healthy, False otherwise
+        """
+        if not self.connected:
+            return False
+
+        # Check if keepalive is working
+        if hasattr(self, 'last_keepalive_sent'):
+            time_since_keepalive = time.time() - self.last_keepalive_sent
+            # If no keepalive sent in 15 seconds, consider unhealthy
+            if time_since_keepalive > 15.0:
+                return False
+
+        return True
 
     def add_meter_callback(self, callback: Callable):
         """Add callback for meter updates"""

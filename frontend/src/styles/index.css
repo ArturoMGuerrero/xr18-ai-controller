@@ -2,6 +2,16 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Theme CSS Custom Properties - Default Dark Theme */
+:root {
+  --color-bg: #1a1a1a;
+  --color-panel: #2a2a2a;
+  --color-fader: #3a3a3a;
+  --color-accent: #4a90e2;
+  --color-text: #ffffff;
+  --color-text-secondary: #9ca3af;
+}
+
 * {
   margin: 0;
   padding: 0;

@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     ai_history_window: int = 100
     ai_confidence_threshold: float = 0.7
 
+    # Learning Data Storage
+    learning_data_dir: str = "backend/data/learning"
+    learning_autosave_interval: int = 30  # seconds
+
     # Server Configuration
     host: str = "127.0.0.1"
     port: int = 8000

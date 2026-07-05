@@ -52,3 +52,8 @@ desktop.ini
 # Logs
 logs/
 *.log
+backend/logs/
+
+# User data (learning data, sessions)
+backend/data/
+!backend/data/.gitkeep
