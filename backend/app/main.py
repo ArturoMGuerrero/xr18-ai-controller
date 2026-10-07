@@ -2,18 +2,23 @@
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List, Optional, Dict
+from pydantic import BaseModel, Field
+from typing import List, Optional, Dict, Literal
 import asyncio
 import time
 import json
+from datetime import datetime
 
 from .config import settings
 from .adapters import BehringerAdapter
+from .adapters.demo_adapter import DemoAdapter
 from .ai_controller import AIAudioController, ChannelConfig, AIDecision
 from .storage.learning_storage import LearningStorage
+from .storage.session_db import SessionDatabase
 from .services.logger import setup_logging, get_logger
 from .services.alert_engine import AlertEngine, AlertConfig, AlertType, AlertSeverity
+from .services.preset_analyzer import PresetAnalyzer
+from .services.command_history import CommandHistory, SetFaderCommand, SetMuteCommand
 
 # Initialize logging
 logger = setup_logging(log_level=settings.log_level)
@@ -41,13 +46,16 @@ ai_enabled = False
 active_websockets: List[WebSocket] = []
 learning_storage = LearningStorage(data_dir=settings.learning_data_dir)
 alert_engine = AlertEngine()
+session_db = SessionDatabase()
+preset_analyzer = PresetAnalyzer()
+command_history = CommandHistory(max_size=50)
 
 
 # Pydantic models
 class ConnectionConfig(BaseModel):
-    mixer_model: str = "xr18"  # xr18, x32, m32
-    ip_address: str
-    port: Optional[int] = None
+    mixer_model: Literal["xr18", "x32", "m32", "demo"] = Field(default="xr18", description="Mixer model to connect to")
+    ip_address: str = Field(default="192.168.1.1", description="IP address or 'DEMO' for simulation")
+    port: Optional[int] = Field(default=None, description="OSC port (auto-detected if not specified)")
 
 
 class ModeConfig(BaseModel):
@@ -95,18 +103,42 @@ async def root():
 
 @app.post("/api/mixer/connect")
 async def connect_mixer(config: ConnectionConfig):
-    """Connect to mixer"""
+    """Connect to mixer (supports DEMO mode)"""
+    import sys
+    sys.stdout.flush()
+
+    print(f"\n{'='*60}", flush=True)
+    print(f"CONNECT_MIXER CALLED - {datetime.now()}", flush=True)
+    print(f"Model: {config.mixer_model}", flush=True)
+    print(f"IP: {config.ip_address}", flush=True)
+    print(f"Port: {config.port}", flush=True)
+    print(f"{'='*60}\n", flush=True)
+
     global mixer_adapter
 
     try:
         if mixer_adapter and mixer_adapter.connected:
             await mixer_adapter.disconnect()
 
-        mixer_adapter = BehringerAdapter(model=config.mixer_model)
-        success = await mixer_adapter.connect(config.ip_address, config.port)
+        logger.info(f"Connection request: model={config.mixer_model}, ip={config.ip_address}")
+
+        # Check for DEMO mode
+        if config.mixer_model == "demo" or config.ip_address.upper() == "DEMO":
+            logger.info("Connecting in DEMO mode (simulated mixer)")
+            model_to_use = config.mixer_model if config.mixer_model != "demo" else "xr18"
+            logger.info(f"Creating DemoAdapter with model={model_to_use}")
+            mixer_adapter = DemoAdapter(model=model_to_use)
+            success = await mixer_adapter.connect("DEMO", 0)
+        else:
+            # Real hardware connection
+            logger.info(f"Connecting to real hardware: {config.mixer_model} at {config.ip_address}")
+            mixer_adapter = BehringerAdapter(model=config.mixer_model)
+            success = await mixer_adapter.connect(config.ip_address, config.port)
 
         if success:
-            await mixer_adapter.subscribe_to_meters()
+            # Subscribe to meters (only for real hardware)
+            if not isinstance(mixer_adapter, DemoAdapter):
+                await mixer_adapter.subscribe_to_meters()
 
             mixer_info = await mixer_adapter.get_mixer_info()
 
@@ -128,7 +160,18 @@ async def connect_mixer(config: ConnectionConfig):
             raise HTTPException(status_code=500, detail="Failed to connect to mixer")
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        error_detail = {
+            "error": str(e),
+            "type": type(e).__name__,
+            "traceback": traceback.format_exc()
+        }
+        logger.error(f"Connection failed: {error_detail}")
+        print(f"\n=== CONNECTION ERROR ===")
+        print(f"Error Type: {type(e).__name__}")
+        print(f"Error Message: {str(e)}")
+        print(f"Full Traceback:\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {str(e)}")
 
 
 @app.post("/api/mixer/disconnect")
@@ -168,12 +211,16 @@ async def set_mode(config: ModeConfig):
 
     ai_enabled = config.ai_enabled
 
+    # Enable/disable command history based on AI mode
+    command_history.set_enabled(not ai_enabled)
+
     if not ai_enabled:
         ai_controller.reset_all()
 
     return {
         "ai_enabled": ai_enabled,
-        "message": "AI mode " + ("enabled" if ai_enabled else "disabled")
+        "message": "AI mode " + ("enabled" if ai_enabled else "disabled"),
+        "command_history_enabled": command_history.enabled
     }
 
 
@@ -284,8 +331,18 @@ async def set_fader(control: FaderControl):
         previous_level = current_channel.level_db
         previous_fader = current_channel.fader_value
 
-        # Apply fader change
-        success = await mixer_adapter.set_channel_fader(control.channel, control.value)
+        # Create command for undo/redo
+        from datetime import datetime
+        command = SetFaderCommand(
+            mixer_adapter=mixer_adapter,
+            channel=control.channel,
+            old_value=previous_fader,
+            new_value=control.value,
+            timestamp=datetime.now()
+        )
+
+        # Execute via command history
+        success = await command_history.execute(command)
 
         if success:
             # Record manual adjustment for learning
@@ -301,7 +358,8 @@ async def set_fader(control: FaderControl):
                 "status": "success",
                 "channel": control.channel,
                 "value": control.value,
-                "learning_recorded": ai_controller.learning_enabled
+                "learning_recorded": ai_controller.learning_enabled,
+                "can_undo": command_history.can_undo()
             }
         else:
             raise HTTPException(status_code=500, detail="Failed to set fader")
@@ -315,13 +373,32 @@ async def set_mute(control: MuteControl):
     if not mixer_adapter or not mixer_adapter.connected:
         raise HTTPException(status_code=400, detail="Not connected to mixer")
 
-    success = await mixer_adapter.mute_channel(control.channel, control.mute)
+    # Get current mute state
+    channels = await mixer_adapter.get_all_channels()
+    current_channel = next((ch for ch in channels if ch.channel == control.channel), None)
+
+    if not current_channel:
+        raise HTTPException(status_code=404, detail="Channel not found")
+
+    # Create command for undo/redo
+    from datetime import datetime
+    command = SetMuteCommand(
+        mixer_adapter=mixer_adapter,
+        channel=control.channel,
+        old_muted=current_channel.muted,
+        new_muted=control.mute,
+        timestamp=datetime.now()
+    )
+
+    # Execute via command history
+    success = await command_history.execute(command)
 
     if success:
         return {
             "status": "success",
             "channel": control.channel,
-            "muted": control.mute
+            "muted": control.mute,
+            "can_undo": command_history.can_undo()
         }
     else:
         raise HTTPException(status_code=500, detail="Failed to mute channel")
@@ -353,6 +430,91 @@ async def get_all_channels():
             }
             for ch in channels
         ]
+    }
+
+
+# ==================== Undo/Redo ====================
+
+@app.post("/api/mixer/undo")
+async def undo_last_command():
+    """Undo last manual command"""
+    if ai_enabled:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot undo while AI mode is enabled"
+        )
+
+    if not mixer_adapter or not mixer_adapter.connected:
+        raise HTTPException(status_code=400, detail="Not connected to mixer")
+
+    description = await command_history.undo()
+
+    if description:
+        return {
+            "status": "success",
+            "action": "undo",
+            "description": description,
+            "can_undo": command_history.can_undo(),
+            "can_redo": command_history.can_redo()
+        }
+    else:
+        return {
+            "status": "nothing_to_undo",
+            "message": "No commands to undo",
+            "can_undo": False,
+            "can_redo": command_history.can_redo()
+        }
+
+
+@app.post("/api/mixer/redo")
+async def redo_last_command():
+    """Redo last undone command"""
+    if ai_enabled:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot redo while AI mode is enabled"
+        )
+
+    if not mixer_adapter or not mixer_adapter.connected:
+        raise HTTPException(status_code=400, detail="Not connected to mixer")
+
+    description = await command_history.redo()
+
+    if description:
+        return {
+            "status": "success",
+            "action": "redo",
+            "description": description,
+            "can_undo": command_history.can_undo(),
+            "can_redo": command_history.can_redo()
+        }
+    else:
+        return {
+            "status": "nothing_to_redo",
+            "message": "No commands to redo",
+            "can_undo": command_history.can_undo(),
+            "can_redo": False
+        }
+
+
+@app.get("/api/mixer/history")
+async def get_command_history(limit: int = 10):
+    """Get command history"""
+    return {
+        "status": "success",
+        "history": command_history.get_history(limit=limit),
+        "stats": command_history.get_stats()
+    }
+
+
+@app.delete("/api/mixer/history")
+async def clear_command_history():
+    """Clear all command history"""
+    command_history.clear()
+
+    return {
+        "status": "success",
+        "message": "Command history cleared"
     }
 
 
@@ -622,6 +784,127 @@ async def import_preset(preset_data: dict):
         raise HTTPException(status_code=400, detail=f"Invalid preset data: {str(e)}")
 
 
+# ==================== Smart Presets ====================
+
+@app.get("/api/presets/suggest")
+async def suggest_presets(top_n: int = 3):
+    """Get smart preset suggestions based on current mixer state"""
+    if not mixer_adapter or not mixer_adapter.connected:
+        raise HTTPException(status_code=400, detail="Not connected to mixer")
+
+    # Get current channels with stats
+    channels = await mixer_adapter.get_all_channels()
+
+    channel_data = [
+        {
+            "channel": ch.channel,
+            "level_db": ch.level_db,
+            "fader_value": ch.fader_value,
+            "stats": ai_controller.get_channel_stats(ch.channel)
+        }
+        for ch in channels
+    ]
+
+    # Get suggestions
+    suggestions = preset_analyzer.suggest_presets(channel_data, top_n=top_n)
+
+    return {
+        "status": "success",
+        "suggestions": [
+            {
+                "preset_name": s.preset_name,
+                "score": s.score,
+                "reasons": s.reasons,
+                "recommended": s.recommended,
+                "description": preset_analyzer.BUILTIN_PRESETS[s.preset_name]["description"]
+            }
+            for s in suggestions
+        ],
+        "mixer_state": preset_analyzer.analyze_mixer_state(channel_data)
+    }
+
+
+class SmartPresetApply(BaseModel):
+    preset_name: str
+    apply_adjustments: bool = True
+
+
+@app.post("/api/presets/apply-smart")
+async def apply_smart_preset(preset_data: SmartPresetApply):
+    """Apply a smart preset with context-aware adjustments"""
+    if not mixer_adapter or not mixer_adapter.connected:
+        raise HTTPException(status_code=400, detail="Not connected to mixer")
+
+    # Get preset configuration
+    preset_config = preset_analyzer.get_preset_config(preset_data.preset_name)
+
+    if not preset_config:
+        raise HTTPException(status_code=404, detail=f"Preset '{preset_data.preset_name}' not found")
+
+    # Update AI controller configuration
+    for channel in range(1, mixer_adapter.channels + 1):
+        config = ChannelConfig(
+            channel=channel,
+            max_threshold_db=preset_config["max_threshold_db"],
+            target_level_db=preset_config["target_level_db"],
+            min_threshold_db=preset_config["min_threshold_db"],
+            auto_adjust_enabled=True,
+            adjustment_speed=preset_config["adjustment_speed"]
+        )
+        ai_controller.configure_channel(config)
+
+    # Apply smart adjustments if requested
+    adjusted_count = 0
+
+    if preset_data.apply_adjustments:
+        # Get current average levels
+        channels = await mixer_adapter.get_all_channels()
+
+        current_levels = {}
+        for ch in channels:
+            stats = ai_controller.get_channel_stats(ch.channel)
+            if stats and stats.get('avg_db'):
+                current_levels[ch.channel] = stats['avg_db']
+
+        # Calculate adjusted fader positions
+        adjusted_faders = preset_analyzer.apply_preset_with_adjustment(
+            preset_data.preset_name,
+            current_levels
+        )
+
+        # Apply fader adjustments
+        for channel, fader_value in adjusted_faders.items():
+            await mixer_adapter.set_channel_fader(channel, fader_value)
+            adjusted_count += 1
+
+    logger.info(f"Applied smart preset: {preset_data.preset_name}, adjusted {adjusted_count} channels")
+
+    return {
+        "status": "success",
+        "message": f"Preset '{preset_data.preset_name}' applied",
+        "preset_config": preset_config,
+        "channels_adjusted": adjusted_count
+    }
+
+
+@app.get("/api/presets/builtin")
+async def list_builtin_presets():
+    """List all built-in smart presets"""
+    return {
+        "status": "success",
+        "presets": {
+            name: {
+                "description": config["description"],
+                "max_threshold_db": config["max_threshold_db"],
+                "target_level_db": config["target_level_db"],
+                "min_threshold_db": config["min_threshold_db"],
+                "adjustment_speed": config["adjustment_speed"]
+            }
+            for name, config in preset_analyzer.BUILTIN_PRESETS.items()
+        }
+    }
+
+
 # ==================== Alert System ====================
 
 @app.get("/api/alerts/history")
@@ -734,6 +1017,124 @@ async def clear_alert_history():
     }
 
 
+# ==================== Session Recording ====================
+
+class SessionStart(BaseModel):
+    name: str
+    notes: Optional[str] = None
+
+
+@app.post("/api/sessions/start")
+async def start_session_recording(session_data: SessionStart):
+    """Start a new recording session"""
+    if not mixer_adapter or not mixer_adapter.connected:
+        raise HTTPException(status_code=400, detail="Not connected to mixer")
+
+    mixer_model = mixer_adapter.model if mixer_adapter else "unknown"
+
+    session_id = session_db.start_session(
+        name=session_data.name,
+        mixer_model=mixer_model,
+        notes=session_data.notes
+    )
+
+    logger.info(f"Started recording session: {session_data.name} (ID: {session_id})")
+
+    return {
+        "status": "success",
+        "message": f"Session '{session_data.name}' started",
+        "session_id": session_id
+    }
+
+
+@app.post("/api/sessions/{session_id}/stop")
+async def stop_session_recording(session_id: int):
+    """Stop a recording session"""
+    try:
+        session_db.end_session(session_id)
+
+        logger.info(f"Stopped recording session ID: {session_id}")
+
+        return {
+            "status": "success",
+            "message": f"Session {session_id} stopped"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to stop session: {str(e)}")
+
+
+@app.get("/api/sessions/list")
+async def list_sessions(limit: int = 50):
+    """List all recording sessions"""
+    sessions = session_db.list_sessions(limit=limit)
+
+    return {
+        "status": "success",
+        "sessions": sessions,
+        "count": len(sessions)
+    }
+
+
+@app.get("/api/sessions/{session_id}/stats")
+async def get_session_stats(session_id: int):
+    """Get statistics for a session"""
+    stats = session_db.get_session_stats(session_id)
+
+    if not stats:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+    return {
+        "status": "success",
+        "stats": stats
+    }
+
+
+@app.get("/api/sessions/{session_id}/export")
+async def export_session_csv(session_id: int):
+    """Export session data as CSV"""
+    try:
+        csv_data = session_db.export_session_csv(session_id)
+
+        from fastapi.responses import Response
+
+        return Response(
+            content=csv_data,
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": f"attachment; filename=session_{session_id}.csv"
+            }
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
+
+
+@app.delete("/api/sessions/{session_id}")
+async def delete_session(session_id: int):
+    """Delete a session"""
+    try:
+        session_db.delete_session(session_id)
+
+        logger.info(f"Deleted session ID: {session_id}")
+
+        return {
+            "status": "success",
+            "message": f"Session {session_id} deleted"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Delete failed: {str(e)}")
+
+
+@app.post("/api/sessions/cleanup")
+async def cleanup_old_sessions(days: int = 30):
+    """Clean up sessions older than specified days"""
+    deleted_count = session_db.cleanup_old_sessions(days=days)
+
+    return {
+        "status": "success",
+        "message": f"Cleaned up {deleted_count} old sessions",
+        "deleted_count": deleted_count
+    }
+
 
 @app.websocket("/ws/meters")
 async def websocket_meters(websocket: WebSocket):
@@ -755,6 +1156,17 @@ async def websocket_meters(websocket: WebSocket):
             decisions = []
             alerts = []
 
+            # Prepare channel data for session recording
+            channel_data = [
+                {
+                    "channel": ch.channel,
+                    "level_db": ch.level_db,
+                    "fader_value": ch.fader_value,
+                    "muted": ch.muted
+                }
+                for ch in channels
+            ]
+
             # Check for alerts on all channels
             for ch in channels:
                 stats = ai_controller.get_channel_stats(ch.channel)
@@ -767,6 +1179,9 @@ async def websocket_meters(websocket: WebSocket):
                 alerts.extend(channel_alerts)
 
             if ai_enabled:
+                # Collect AI decisions and batch fader updates
+                batch_fader_updates = {}
+
                 for ch in channels:
                     if ch.level_db > -60:
                         decision = ai_controller.analyze_level(ch.channel, ch.level_db)
@@ -777,10 +1192,8 @@ async def websocket_meters(websocket: WebSocket):
 
                         if decision.action == 'reduce' or decision.action == 'increase':
                             if decision.suggested_fader is not None:
-                                await mixer_adapter.set_channel_fader(
-                                    ch.channel,
-                                    decision.suggested_fader
-                                )
+                                # Accumulate for batch send
+                                batch_fader_updates[ch.channel] = decision.suggested_fader
 
                                 decisions.append({
                                     "channel": decision.channel,
@@ -792,17 +1205,54 @@ async def websocket_meters(websocket: WebSocket):
                                     "confidence": decision.confidence
                                 })
 
-            await websocket.send_json({
+                # Send batch OSC updates if we have multiple adjustments
+                if batch_fader_updates:
+                    if len(batch_fader_updates) > 1:
+                        # Use batch for efficiency
+                        await mixer_adapter.set_channel_fader_batch(batch_fader_updates)
+                        logger.debug(f"Batch updated {len(batch_fader_updates)} channels")
+                    else:
+                        # Single update, use regular method
+                        channel, value = list(batch_fader_updates.items())[0]
+                        await mixer_adapter.set_channel_fader(channel, value)
+
+            # Sanitize values for JSON serialization
+            def sanitize_number(value):
+                """Convert inf/-inf/nan to valid JSON numbers"""
+                import math
+                if value is None:
+                    return None
+                if math.isinf(value):
+                    return -60.0 if value < 0 else 0.0
+                if math.isnan(value):
+                    return None
+                return float(value)
+
+            def sanitize_stats(stats):
+                """Sanitize all stats values"""
+                if not stats:
+                    return None
+                return {
+                    "samples": stats.get("samples", 0),
+                    "avg_db": sanitize_number(stats.get("avg_db")),
+                    "max_db": sanitize_number(stats.get("max_db")),
+                    "min_db": sanitize_number(stats.get("min_db")),
+                    "std_dev": sanitize_number(stats.get("std_dev")),
+                    "recent_peak": sanitize_number(stats.get("recent_peak"))
+                }
+
+            # Build the message
+            message = {
                 "timestamp": time.time(),
                 "ai_enabled": ai_enabled,
                 "channels": [
                     {
                         "channel": ch.channel,
                         "name": ch.name,
-                        "level_db": ch.level_db,
-                        "fader_value": ch.fader_value,
+                        "level_db": sanitize_number(ch.level_db),
+                        "fader_value": sanitize_number(ch.fader_value),
                         "muted": ch.muted,
-                        "stats": ai_controller.get_channel_stats(ch.channel)
+                        "stats": sanitize_stats(ai_controller.get_channel_stats(ch.channel))
                     }
                     for ch in channels
                 ],
@@ -818,14 +1268,50 @@ async def websocket_meters(websocket: WebSocket):
                     }
                     for alert in alerts
                 ]
-            })
+            }
+
+            # Test JSON serialization before sending
+            try:
+                import json
+                json_str = json.dumps(message)
+                await websocket.send_text(json_str)
+            except (ValueError, TypeError) as e:
+                print(f"\n{'='*60}")
+                print(f"JSON SERIALIZATION ERROR!")
+                print(f"Error: {e}")
+                print(f"Message preview: {str(message)[:500]}")
+                print(f"{'='*60}\n")
+                # Send error message instead
+                await websocket.send_json({
+                    "error": "Serialization error",
+                    "timestamp": time.time()
+                })
+
+            # Record frame if session is active
+            if session_db.current_session_id:
+                session_db.record_frame(
+                    session_id=session_db.current_session_id,
+                    channels=channel_data,
+                    ai_decisions=decisions
+                )
 
             await asyncio.sleep(settings.ws_refresh_rate_ms / 1000)
 
     except WebSocketDisconnect:
-        active_websockets.remove(websocket)
+        if websocket in active_websockets:
+            active_websockets.remove(websocket)
+        logger.info("WebSocket client disconnected")
     except Exception as e:
-        print(f"WebSocket error: {e}")
+        import traceback
+        error_msg = f"WebSocket error: {type(e).__name__}: {str(e)}"
+        print(f"\n{'='*60}")
+        print(f"WEBSOCKET ERROR!")
+        print(f"Error type: {type(e).__name__}")
+        print(f"Error message: {str(e)}")
+        print(f"Traceback:")
+        traceback.print_exc()
+        print(f"{'='*60}\n")
+        logger.error(error_msg, exc_info=True)
         if websocket in active_websockets:
             active_websockets.remove(websocket)
 

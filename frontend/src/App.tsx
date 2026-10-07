@@ -6,13 +6,15 @@ import { Dashboard } from './components/Dashboard';
 import { AISettings } from './components/AISettings';
 import { ThemeSelector } from './components/ThemeSelector';
 import { HelpModal } from './components/HelpModal';
+import { PresetManager } from './components/PresetManager';
+import { LearningMode } from './components/LearningMode';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useTheme } from './hooks/useTheme';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { apiService } from './services/api';
 import { ConnectionConfig, MixerInfo } from './types';
 
-type Tab = 'mixer' | 'dashboard' | 'ai-settings' | 'themes';
+type Tab = 'mixer' | 'dashboard' | 'ai-settings' | 'presets' | 'learning' | 'themes';
 
 function App() {
   const [mixerInfo, setMixerInfo] = useState<MixerInfo | null>(null);
@@ -168,6 +170,8 @@ function App() {
               { id: 'mixer' as Tab, label: 'Mixer Control', icon: '🎚️' },
               { id: 'dashboard' as Tab, label: 'Dashboard', icon: '📊' },
               { id: 'ai-settings' as Tab, label: 'AI Settings', icon: '⚙️' },
+              { id: 'presets' as Tab, label: 'Presets', icon: '💾' },
+              { id: 'learning' as Tab, label: 'Learning Mode', icon: '🧠' },
               { id: 'themes' as Tab, label: 'Themes', icon: '🎨' },
             ].map((tab) => (
               <button
@@ -254,6 +258,12 @@ function App() {
 
         {/* AI Settings Tab */}
         {activeTab === 'ai-settings' && <AISettings />}
+
+        {/* Presets Tab */}
+        {activeTab === 'presets' && <PresetManager />}
+
+        {/* Learning Mode Tab */}
+        {activeTab === 'learning' && <LearningMode />}
 
         {/* Themes Tab */}
         {activeTab === 'themes' && <ThemeSelector />}

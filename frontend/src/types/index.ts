@@ -43,7 +43,7 @@ export interface MeterData {
 }
 
 export interface ConnectionConfig {
-  mixer_model: 'xr18' | 'x32' | 'm32';
+  mixer_model: 'xr18' | 'x32' | 'm32' | 'demo';
   ip_address: string;
   port?: number;
 }
@@ -54,4 +54,29 @@ export interface ChannelConfig {
   target_level_db: number;
   min_threshold_db: number;
   auto_adjust_enabled: boolean;
+}
+
+export interface MixerPreset {
+  name: string;
+  description: string;
+  created_at: string;
+  channels: number;
+}
+
+export interface LearningStats {
+  total_adjustments: number;
+  channels_with_learning: number;
+  channels: {
+    [channel: number]: {
+      adjustments: number;
+      style: 'aggressive' | 'moderate' | 'conservative';
+    };
+  };
+}
+
+export interface ChannelLearningStats {
+  channel: number;
+  adjustments_recorded: number;
+  response_style?: 'aggressive' | 'moderate' | 'conservative';
+  has_learned_behavior: boolean;
 }

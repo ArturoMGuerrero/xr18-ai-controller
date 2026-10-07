@@ -14,7 +14,7 @@ export const ConnectionPanel: React.FC<ConnectionPanelProps> = ({
   mixerInfo,
   connected,
 }) => {
-  const [model, setModel] = useState<'xr18' | 'x32' | 'm32'>('xr18');
+  const [model, setModel] = useState<'xr18' | 'x32' | 'm32' | 'demo'>('xr18');
   const [ipAddress, setIpAddress] = useState('192.168.1.1');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -26,10 +26,28 @@ export const ConnectionPanel: React.FC<ConnectionPanelProps> = ({
     try {
       await onConnect({
         mixer_model: model,
-        ip_address: ipAddress,
+        ip_address: model === 'demo' ? 'DEMO' : ipAddress,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Connection failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDemoMode = async () => {
+    setModel('demo');
+    setIpAddress('DEMO');
+    setLoading(true);
+    setError(null);
+
+    try {
+      await onConnect({
+        mixer_model: 'demo',
+        ip_address: 'DEMO',
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'DEMO mode failed');
     } finally {
       setLoading(false);
     }
@@ -59,27 +77,34 @@ export const ConnectionPanel: React.FC<ConnectionPanelProps> = ({
             </label>
             <select
               value={model}
-              onChange={(e) => setModel(e.target.value as 'xr18' | 'x32' | 'm32')}
+              onChange={(e) => setModel(e.target.value as 'xr18' | 'x32' | 'm32' | 'demo')}
               className="w-full bg-mixer-fader border border-gray-600 rounded px-3 py-2 text-white"
             >
               <option value="xr18">Behringer XR18</option>
               <option value="x32">Behringer X32</option>
               <option value="m32">Midas M32</option>
+              <option value="demo">🎭 DEMO Mode (Simulated)</option>
             </select>
           </div>
 
-          {/* IP Address */}
+          {/* IP Address (disabled in demo mode) */}
           <div>
             <label className="block text-sm font-medium text-gray-300 mb-2">
               IP Address
             </label>
             <input
               type="text"
-              value={ipAddress}
+              value={model === 'demo' ? 'DEMO' : ipAddress}
               onChange={(e) => setIpAddress(e.target.value)}
               placeholder="192.168.1.1"
-              className="w-full bg-mixer-fader border border-gray-600 rounded px-3 py-2 text-white"
+              disabled={model === 'demo'}
+              className="w-full bg-mixer-fader border border-gray-600 rounded px-3 py-2 text-white disabled:opacity-50 disabled:cursor-not-allowed"
             />
+            {model === 'demo' && (
+              <p className="text-xs text-yellow-400 mt-1">
+                ⚠️ Demo mode generates simulated audio data (no physical mixer required)
+              </p>
+            )}
           </div>
 
           {/* Error Message */}
@@ -89,14 +114,26 @@ export const ConnectionPanel: React.FC<ConnectionPanelProps> = ({
             </div>
           )}
 
-          {/* Connect Button */}
-          <button
-            onClick={handleConnect}
-            disabled={loading}
-            className="w-full bg-mixer-accent hover:bg-blue-600 disabled:bg-gray-600 text-white font-bold py-2 px-4 rounded transition-colors"
-          >
-            {loading ? 'Connecting...' : 'Connect'}
-          </button>
+          {/* Connect Buttons */}
+          <div className="space-y-2">
+            <button
+              onClick={handleConnect}
+              disabled={loading}
+              className="w-full bg-mixer-accent hover:bg-blue-600 disabled:bg-gray-600 text-white font-bold py-2 px-4 rounded transition-colors"
+            >
+              {loading ? 'Connecting...' : model === 'demo' ? '🎭 Start Demo Mode' : 'Connect'}
+            </button>
+
+            {model !== 'demo' && (
+              <button
+                onClick={handleDemoMode}
+                disabled={loading}
+                className="w-full bg-yellow-600 hover:bg-yellow-700 disabled:bg-gray-600 text-white font-medium py-2 px-4 rounded transition-colors text-sm"
+              >
+                🎭 Quick Demo (No Mixer Needed)
+              </button>
+            )}
+          </div>
         </div>
       ) : (
         <div className="space-y-4">

@@ -56,7 +56,15 @@ class BehringerAdapter(MixerAdapter):
         super().__init__()
 
         if model not in self.MODELS:
-            raise ValueError(f"Unsupported model: {model}. Use: {list(self.MODELS.keys())}")
+            import traceback
+            print(f"\n{'='*60}")
+            print(f"BEHRINGER ADAPTER __INIT__ ERROR!")
+            print(f"Model received: '{model}'")
+            print(f"Valid models: {list(self.MODELS.keys())}")
+            print(f"Traceback:")
+            traceback.print_stack()
+            print(f"{'='*60}\n")
+            raise ValueError(f"❌ BehringerAdapter got invalid model: '{model}'. Valid: {list(self.MODELS.keys())}")
 
         self.model = model
         self.model_info = self.MODELS[model]
@@ -82,7 +90,11 @@ class BehringerAdapter(MixerAdapter):
             if port is None:
                 port = self.model_info["port"]
 
+            print(f"[BehringerAdapter] Attempting connection to {ip}:{port}")
+            self.logger.info(f"Connecting to {self.model} at {ip}:{port}")
+
             self.client = udp_client.SimpleUDPClient(ip, port)
+            print(f"[BehringerAdapter] UDP client created")
 
             # Start OSC server to receive messages
             disp = dispatcher.Dispatcher()
@@ -93,11 +105,14 @@ class BehringerAdapter(MixerAdapter):
             disp.set_default_handler(self._handle_default)
 
             # Server listens on a different port for responses
+            print(f"[BehringerAdapter] Starting OSC server on port 10111")
             self.server = osc_server.ThreadingOSCUDPServer(("0.0.0.0", 10111), disp)
             self.server_thread = threading.Thread(target=self.server.serve_forever, daemon=True)
             self.server_thread.start()
+            print(f"[BehringerAdapter] OSC server started")
 
             # Send initial connection commands
+            print(f"[BehringerAdapter] Sending initial commands")
             self.client.send_message("/xremote", None)
             self.client.send_message("/info", None)
 
@@ -121,7 +136,12 @@ class BehringerAdapter(MixerAdapter):
             return True
 
         except Exception as e:
-            print(f"Connection error: {e}")
+            import traceback
+            error_msg = f"Connection error: {type(e).__name__}: {str(e)}"
+            print(f"\n=== BEHRINGER ADAPTER ERROR ===")
+            print(error_msg)
+            print(f"Full traceback:\n{traceback.format_exc()}")
+            self.logger.error(error_msg, exc_info=True)
             return False
 
     async def disconnect(self) -> bool:
@@ -173,6 +193,53 @@ class BehringerAdapter(MixerAdapter):
 
         except Exception as e:
             print(f"Error setting fader: {e}")
+            return False
+
+    async def set_channel_fader_batch(self, fader_updates: Dict[int, float]) -> bool:
+        """
+        Set multiple channel faders in a single OSC bundle
+
+        Args:
+            fader_updates: Dictionary mapping channel number to fader value
+
+        Returns:
+            True if successful
+
+        Note: Uses OSC bundles for reduced latency when adjusting multiple channels
+        """
+        try:
+            from pythonosc import osc_bundle_builder, osc_message_builder
+            import time
+
+            # Create bundle
+            bundle = osc_bundle_builder.OscBundleBuilder(time.time())
+
+            # Add message for each channel
+            for channel, value in fader_updates.items():
+                # Validate
+                validated_value = validate_fader_value(value)
+                validate_channel_number(channel, max_channel=self.model_info["channels"])
+
+                # Build message
+                osc_path = self._get_channel_path(channel, "mix/fader")
+                builder = osc_message_builder.OscMessageBuilder(address=osc_path)
+                builder.add_arg(validated_value)
+
+                # Add to bundle
+                bundle.add_content(builder.build())
+
+                # Update local cache
+                self.fader_values[channel] = validated_value
+
+            # Send bundle
+            bundle_msg = bundle.build()
+            self.client.send(bundle_msg)
+
+            self.logger.debug(f"Sent OSC bundle with {len(fader_updates)} fader updates")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Error sending batch fader updates: {e}")
             return False
 
     async def get_channel_info(self, channel: int) -> ChannelInfo:
