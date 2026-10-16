@@ -2,69 +2,43 @@ name: Build and Test
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ master, main, develop ]
   pull_request:
-    branches: [ main ]
+    branches: [ master, main ]
 
 jobs:
-  test-backend:
-    name: Test Python Backend
+  test:
+    name: Test & Lint
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v3
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: |
-          cd backend
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Run tests
-        run: |
-          cd backend
-          pytest -v
-
-  test-frontend:
-    name: Test Frontend
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Set up Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version-file: .nvmrc
 
       - name: Install dependencies
         run: |
-          cd frontend
-          npm install
+          npm ci
+          npm ci --prefix frontend
 
-      - name: Type check
-        run: |
-          cd frontend
-          npm run type-check
+      - name: Type check (mixer engine)
+        run: npm run typecheck
 
-      - name: Lint
-        run: |
-          cd frontend
-          npm run lint
+      - name: Test (mixer engine)
+        run: npm test
 
-      - name: Build
-        run: |
-          cd frontend
-          npm run build
+      - name: Lint (UI)
+        run: npm run lint --prefix frontend
+
+      - name: Build (UI)
+        run: npm run build --prefix frontend
 
   build-electron:
-    name: Build Electron App
-    needs: [test-backend, test-frontend]
+    name: Build installer
+    needs: test
     runs-on: ${{ matrix.os }}
 
     strategy:
@@ -72,40 +46,28 @@ jobs:
         os: [windows-latest, macos-latest, ubuntu-latest]
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Set up Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
-          node-version: '20'
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
+          node-version-file: .nvmrc
 
       - name: Install dependencies
         run: |
-          npm run frontend:install
-          npm install
+          npm ci
+          npm ci --prefix frontend
 
-      - name: Build frontend
-        run: npm run frontend:build
-
-      - name: Build Electron (Windows)
-        if: matrix.os == 'windows-latest'
-        run: npm run build:win
-
-      - name: Build Electron (macOS)
-        if: matrix.os == 'macos-latest'
-        run: npm run build:mac
-
-      - name: Build Electron (Linux)
-        if: matrix.os == 'ubuntu-latest'
-        run: npm run build:linux
+      - name: Build installer
+        run: npm run build -- --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: xr18-ai-controller-${{ matrix.os }}
-          path: dist/*
+          path: |
+            dist/*.exe
+            dist/*.dmg
+            dist/*.AppImage

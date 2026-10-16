@@ -4,101 +4,50 @@ Get XR18 AI Controller running in 5 minutes.
 
 ## Prerequisites
 
-- ✅ Python 3.11+ installed
-- ✅ Node.js 20+ installed
-- ✅ Behringer XR18, X32, or M32 mixer on your network
+- ✅ Node.js 22 (for development; the installer needs nothing)
+- ✅ Behringer XR18, X32, or M32 on your network (or use Demo mode)
 
 ## Step 1: Install Dependencies
 
-### Windows
 ```bash
-# Double-click setup.bat
-# OR run in terminal:
-setup.bat
-```
-
-### macOS/Linux
-```bash
-chmod +x setup.sh
-./setup.sh
-```
-
-### Manual Installation
-```bash
-# Install everything at once
 npm run install:all
 ```
 
-## Step 2: Configure Mixer IP
-
-Edit `backend/.env`:
-```bash
-XR18_IP=192.168.1.1  # Change to your mixer's IP
-```
-
-**How to find mixer IP:**
-- XR18: Connect to mixer WiFi, IP is usually `192.168.1.1`
-- X32: Check network settings on console screen
-
-## Step 3: Run the App
+## Step 2: Run the App
 
 ```bash
 npm run dev
 ```
 
-This will:
-1. Start Python backend (http://localhost:8000)
-2. Start React frontend (http://localhost:5173)
-3. Open Electron window
+This starts the Vite dev server, compiles the Electron/mixer engine in watch mode and opens the app window.
 
-## Step 4: Connect to Mixer
+## Step 3: Connect to the Mixer
 
-1. In the app, select your mixer model (XR18, X32, or M32)
-2. Enter mixer IP address
-3. Click "Connect"
-4. Wait for green "Connected" status
+1. Select your mixer model, or click **🔍 Find mixers on the network** and pick it from the list
+2. Check the IP address
+   - XR18 on its own WiFi access point: usually `192.168.1.1`
+   - X32: Setup → Network on the console
+3. Click **Connect**: the app only reports "Connected" once the console has actually answered
 
-## Step 5: Try AI Mode
+No mixer handy? Click **🎭 Quick Demo**.
 
-1. Click the AI toggle switch
-2. Make some noise into a microphone connected to the mixer
-3. Watch as AI automatically adjusts levels
-4. See AI decisions in the panel
+## Step 4: Try AI Mode
+
+1. Set your faders where you want them, then turn on the AI toggle
+2. Send signal into the console
+3. The AI moves faders gently, never more than **Max Cut / Max Boost** (AI Settings) from where you left them
+4. Grab a fader on the desk at any time: the AI follows you and leaves that channel alone for 10 s
+
+**Important:** in AI Settings, set **Mixer Meter Tap** to match your console. If the channel meters do not
+move when you move a fader, the meters are pre-fader (the default).
 
 ## Troubleshooting
 
-**Can't connect to mixer?**
-```bash
-# Test connection
-ping 192.168.1.1
-```
+**"No response from …" when connecting?**
+- Is this computer on the mixer's network? (`ping 192.168.1.1`)
+- Is UDP blocked by a firewall? The console replies from port 10024 (XR) / 10023 (X32)
+- Working on WiFi + USB/Ethernet at the same time? See `scripts/verify-dual-setup.bat`
 
-**Backend won't start?**
-```bash
-# Check Python version
-python --version  # Should be 3.11+
-
-# Reinstall dependencies
-cd backend
-pip install -r requirements.txt
-```
-
-**Frontend won't start?**
-```bash
-# Check Node version
-node --version  # Should be 20+
-
-# Reinstall dependencies
-cd frontend
-npm install
-```
-
-## Next Steps
-
-- Read [CLAUDE.md](./CLAUDE.md) for complete documentation
-- Adjust thresholds in `backend/app/config.py`
-- Build installer: `npm run build:win`
-
-## Support
-
-For issues or questions, check the [CLAUDE.md](./CLAUDE.md) Troubleshooting section.
+**"Mixer Not Responding" in the header?**
+The link dropped (WiFi, cable, console rebooted). The AI freezes all faders and the app reconnects by itself
+as soon as the console answers again.

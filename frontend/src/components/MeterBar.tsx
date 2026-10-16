@@ -11,15 +11,7 @@ export const MeterBar: React.FC<MeterBarProps> = ({ level }) => {
     return ((db + 60) / 60) * 100;
   };
 
-  const getColor = (db: number): string => {
-    if (db > -3) return 'bg-mixer-danger';
-    if (db > -6) return 'bg-mixer-warning';
-    if (db > -12) return 'bg-mixer-success';
-    return 'bg-green-500';
-  };
-
   const percent = dbToPercent(level);
-  const color = getColor(level);
 
   const segments = [
     { threshold: -3, color: 'bg-red-500', label: '0' },

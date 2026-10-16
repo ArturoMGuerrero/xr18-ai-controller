@@ -12,6 +12,8 @@ interface ShortcutHandlers {
   onIncreaseChannel?: (channel: number) => void;
   onDecreaseChannel?: (channel: number) => void;
   onMuteChannel?: (channel: number) => void;
+  onUndo?: () => void;
+  onRedo?: () => void;
 }
 
 export const useKeyboardShortcuts = (handlers: ShortcutHandlers) => {
@@ -75,9 +77,22 @@ export const useKeyboardShortcuts = (handlers: ShortcutHandlers) => {
         handlers.onToggleHelp?.();
       }
 
-      // Number keys 1-9 with modifiers for channel control
-      const channelNum = parseInt(key);
-      if (!isNaN(channelNum) && channelNum >= 1 && channelNum <= 9) {
+      // Ctrl + Z: Undo, Ctrl + Y / Ctrl + Shift + Z: Redo
+      if (ctrlKey && !altKey && key.toLowerCase() === 'z') {
+        event.preventDefault();
+        if (shiftKey) handlers.onRedo?.();
+        else handlers.onUndo?.();
+      }
+      if (ctrlKey && !shiftKey && key.toLowerCase() === 'y') {
+        event.preventDefault();
+        handlers.onRedo?.();
+      }
+
+      // Number keys 1-9 with modifiers for channel control. Uses the physical key, because
+      // with Shift held `key` is the symbol ("!", "@"...) rather than the digit.
+      const digit = /^Digit([1-9])$/.exec(event.code);
+      const channelNum = digit ? Number(digit[1]) : NaN;
+      if (!isNaN(channelNum)) {
         // Ctrl + Number: Increase channel level
         if (ctrlKey && !shiftKey) {
           event.preventDefault();
@@ -118,4 +133,6 @@ export const shortcuts = {
   increaseChannel: 'Ctrl + [1-9]',
   decreaseChannel: 'Shift + [1-9]',
   muteChannel: 'Alt + [1-9]',
+  undo: 'Ctrl + Z',
+  redo: 'Ctrl + Y',
 };

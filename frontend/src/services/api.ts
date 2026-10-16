@@ -1,262 +1,131 @@
-import { ConnectionConfig, MixerInfo, ChannelConfig } from '../types';
+import type {
+  AIConfig,
+  ChannelConfig,
+  ConnectionConfig,
+  MeterData,
+  MixerApi,
+  MixerBridge,
+  MixerInfo,
+  MixerMethod,
+} from '../types';
 
-const API_BASE_URL = 'http://localhost:8000';
+declare global {
+  interface Window {
+    /** Provided by electron/preload.ts. Missing when the UI runs in a plain browser. */
+    mixer?: MixerBridge;
+  }
+}
 
+function bridge(): MixerBridge {
+  if (!window.mixer) {
+    throw new Error('Mixer engine not available: run the app with `npm run dev` (Electron), not in a browser.');
+  }
+  return window.mixer;
+}
+
+async function call<M extends MixerMethod>(
+  method: M,
+  ...args: Parameters<MixerApi[M]>
+): Promise<Awaited<ReturnType<MixerApi[M]>>> {
+  const result = await bridge().call(method, ...args);
+  if (!result.ok) throw new Error(result.error);
+  return result.value;
+}
+
+/** Talks to the mixer engine in Electron's main process over IPC. */
 export class APIService {
-  private baseUrl: string;
-
-  constructor(baseUrl: string = API_BASE_URL) {
-    this.baseUrl = baseUrl;
-  }
-
   async connectMixer(config: ConnectionConfig): Promise<{ status: string; mixer_info: MixerInfo }> {
-    const response = await fetch(`${this.baseUrl}/api/mixer/connect`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(config),
-    });
-
-    if (!response.ok) {
-      throw new Error(`Connection failed: ${response.statusText}`);
-    }
-
-    return response.json();
+    return { status: 'connected', mixer_info: await call('connect', config) };
   }
 
-  async disconnectMixer(): Promise<{ status: string }> {
-    const response = await fetch(`${this.baseUrl}/api/mixer/disconnect`, {
-      method: 'POST',
-    });
-
-    if (!response.ok) {
-      throw new Error(`Disconnect failed: ${response.statusText}`);
-    }
-
-    return response.json();
+  disconnectMixer() {
+    return call('disconnect');
   }
 
-  async getMixerInfo(): Promise<MixerInfo> {
-    const response = await fetch(`${this.baseUrl}/api/mixer/info`);
-
-    if (!response.ok) {
-      throw new Error(`Failed to get mixer info: ${response.statusText}`);
-    }
-
-    return response.json();
+  discoverMixers(timeoutMs?: number) {
+    return call('discover', timeoutMs);
   }
 
-  async setAIMode(enabled: boolean): Promise<{ ai_enabled: boolean; message: string }> {
-    const response = await fetch(`${this.baseUrl}/api/mode/set`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ai_enabled: enabled }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`Failed to set AI mode: ${response.statusText}`);
-    }
-
-    return response.json();
+  getStatus() {
+    return call('getStatus');
   }
 
-  async getModeStatus(): Promise<{ ai_enabled: boolean; connected: boolean }> {
-    const response = await fetch(`${this.baseUrl}/api/mode/status`);
-
-    if (!response.ok) {
-      throw new Error(`Failed to get mode status: ${response.statusText}`);
-    }
-
-    return response.json();
+  setAIMode(enabled: boolean) {
+    return call('setAiEnabled', enabled);
   }
 
-  async configureChannel(config: ChannelConfig): Promise<{ status: string; channel: number }> {
-    const response = await fetch(`${this.baseUrl}/api/channel/config`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(config),
-    });
-
-    if (!response.ok) {
-      throw new Error(`Failed to configure channel: ${response.statusText}`);
-    }
-
-    return response.json();
+  configureChannel(config: ChannelConfig) {
+    return call('configureChannel', config);
   }
 
-  async setFader(channel: number, value: number): Promise<{ status: string }> {
-    const response = await fetch(`${this.baseUrl}/api/channel/fader`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ channel, value }),
-    });
-
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.detail || 'Failed to set fader');
-    }
-
-    return response.json();
+  setFader(channel: number, value: number) {
+    return call('setFader', channel, value);
   }
 
-  async setMute(channel: number, mute: boolean): Promise<{ status: string }> {
-    const response = await fetch(`${this.baseUrl}/api/channel/mute`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ channel, mute }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`Failed to mute channel: ${response.statusText}`);
-    }
-
-    return response.json();
+  setMute(channel: number, mute: boolean) {
+    return call('setMute', channel, mute);
   }
 
-  createWebSocket(): WebSocket {
-    return new WebSocket(`ws://localhost:8000/ws/meters`);
+  undo() {
+    return call('undo');
+  }
+
+  redo() {
+    return call('redo');
+  }
+
+  onFrame(listener: (frame: MeterData) => void): () => void {
+    return window.mixer ? window.mixer.onFrame(listener) : () => {};
   }
 
   // ==================== AI Configuration ====================
 
-  async getAIConfig(): Promise<any> {
-    const response = await fetch(`${this.baseUrl}/api/ai/config`);
-
-    if (!response.ok) {
-      throw new Error(`Failed to get AI config: ${response.statusText}`);
-    }
-
-    return response.json();
+  getAIConfig() {
+    return call('getAiConfig');
   }
 
-  async updateAIConfig(config: any): Promise<any> {
-    const response = await fetch(`${this.baseUrl}/api/ai/config`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(config),
-    });
-
-    if (!response.ok) {
-      throw new Error(`Failed to update AI config: ${response.statusText}`);
-    }
-
-    return response.json();
+  updateAIConfig(config: AIConfig) {
+    return call('setAiConfig', config);
   }
 
   // ==================== Learning Mode ====================
 
-  async setLearningMode(enabled: boolean): Promise<any> {
-    const response = await fetch(`${this.baseUrl}/api/learning/enable`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ enabled }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`Failed to set learning mode: ${response.statusText}`);
-    }
-
-    return response.json();
+  setLearningMode(enabled: boolean) {
+    return call('setLearningEnabled', enabled);
   }
 
-  async getLearningStatus(): Promise<any> {
-    const response = await fetch(`${this.baseUrl}/api/learning/status`);
-
-    if (!response.ok) {
-      throw new Error(`Failed to get learning status: ${response.statusText}`);
-    }
-
-    return response.json();
+  getLearningStatus() {
+    return call('getLearningStatus');
   }
 
-  async getChannelLearningStats(channel: number): Promise<any> {
-    const response = await fetch(`${this.baseUrl}/api/learning/stats/${channel}`);
-
-    if (!response.ok) {
-      throw new Error(`Failed to get channel learning stats: ${response.statusText}`);
-    }
-
-    return response.json();
+  getChannelLearningStats(channel: number) {
+    return call('getChannelLearningStats', channel);
   }
 
   // ==================== Presets ====================
 
-  async savePreset(name: string, description: string): Promise<any> {
-    const response = await fetch(`${this.baseUrl}/api/presets/save`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, description }),
-    });
-
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.detail || 'Failed to save preset');
-    }
-
-    return response.json();
+  async listPresets() {
+    return { presets: await call('listPresets') };
   }
 
-  async loadPreset(name: string): Promise<any> {
-    const response = await fetch(`${this.baseUrl}/api/presets/load`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name }),
-    });
-
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.detail || 'Failed to load preset');
-    }
-
-    return response.json();
+  savePreset(name: string, description: string) {
+    return call('savePreset', name, description);
   }
 
-  async listPresets(): Promise<any> {
-    const response = await fetch(`${this.baseUrl}/api/presets/list`);
-
-    if (!response.ok) {
-      throw new Error(`Failed to list presets: ${response.statusText}`);
-    }
-
-    return response.json();
+  loadPreset(name: string) {
+    return call('loadPreset', name);
   }
 
-  async deletePreset(name: string): Promise<any> {
-    const response = await fetch(`${this.baseUrl}/api/presets/${encodeURIComponent(name)}`, {
-      method: 'DELETE',
-    });
-
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.detail || 'Failed to delete preset');
-    }
-
-    return response.json();
+  deletePreset(name: string) {
+    return call('deletePreset', name);
   }
 
-  async exportPreset(name: string): Promise<any> {
-    const response = await fetch(`${this.baseUrl}/api/presets/export/${encodeURIComponent(name)}`);
-
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.detail || 'Failed to export preset');
-    }
-
-    return response.json();
+  exportPreset(name: string) {
+    return call('exportPreset', name);
   }
 
-  async importPreset(data: any): Promise<any> {
-    const response = await fetch(`${this.baseUrl}/api/presets/import`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-    });
-
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.detail || 'Failed to import preset');
-    }
-
-    return response.json();
+  importPreset(data: unknown) {
+    return call('importPreset', data);
   }
 }
 

@@ -1,5 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { ChannelInfo } from '../types';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 
 interface BackendAlert {
   alert_id: string;
@@ -21,14 +20,12 @@ interface Alert {
 }
 
 interface AlertSystemProps {
-  channels: ChannelInfo[];
-  backendAlerts?: BackendAlert[];  // Alerts from backend via WebSocket
+  backendAlerts?: BackendAlert[];  // Alerts raised by the mixer engine
   soundEnabled?: boolean;
   notificationsEnabled?: boolean;
 }
 
 export const AlertSystem: React.FC<AlertSystemProps> = ({
-  channels,
   backendAlerts = [],
   soundEnabled = true,
   notificationsEnabled = false,
@@ -88,10 +85,10 @@ export const AlertSystem: React.FC<AlertSystemProps> = ({
   );
 
   const addAlert = useCallback(
-    (alert: Omit<Alert, 'id' | 'timestamp'>) => {
+    (alert: Omit<Alert, 'id' | 'timestamp'>, id?: string) => {
       const newAlert: Alert = {
         ...alert,
-        id: `${Date.now()}-${Math.random()}`,
+        id: id ?? `${Date.now()}-${Math.random()}`,
         timestamp: Date.now(),
       };
 
@@ -118,13 +115,12 @@ export const AlertSystem: React.FC<AlertSystemProps> = ({
     setAlerts([]);
   }, []);
 
-  // Process backend alerts
+  // Process engine alerts (each one arrives in a single frame; remember what we've seen)
+  const seenAlertIds = useRef(new Set<string>());
   useEffect(() => {
     backendAlerts.forEach((backendAlert) => {
-      // Check if we already have this alert
-      const existingAlert = alerts.find((a) => a.id === backendAlert.alert_id);
-
-      if (!existingAlert) {
+      if (!seenAlertIds.current.has(backendAlert.alert_id)) {
+        seenAlertIds.current.add(backendAlert.alert_id);
         // Map backend severity to urgency
         const urgencyMap: Record<string, Alert['urgency']> = {
           'info': 'low',
@@ -138,10 +134,10 @@ export const AlertSystem: React.FC<AlertSystemProps> = ({
           message: backendAlert.message,
           urgency: urgencyMap[backendAlert.severity] || 'medium',
           suggestedAction: backendAlert.suggested_action
-        });
+        }, backendAlert.alert_id);
       }
     });
-  }, [backendAlerts, alerts, addAlert]);
+  }, [backendAlerts, addAlert]);
 
   const requestNotificationPermission = useCallback(async () => {
     if ('Notification' in window && Notification.permission === 'default') {

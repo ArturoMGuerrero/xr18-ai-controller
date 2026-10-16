@@ -2,47 +2,23 @@
 
 Desktop application with AI-powered automatic level control for Behringer XR18, X32, and M32 digital mixing consoles.
 
-**Last Updated:** 2026-07-03  
-**Author:** Jorge Moreno  
-**Version:** 1.0.0
-
----
-
-## Table of Contents
-
-- [Project Overview](#project-overview)
-- [Project Structure](#project-structure)
-- [Technology Stack](#technology-stack)
-- [Development Setup](#development-setup)
-- [Key Features](#key-features)
-- [Architecture & Design Patterns](#architecture--design-patterns)
-- [API Documentation](#api-documentation)
-- [Development Commands](#development-commands)
-- [Configuration](#configuration)
-- [Testing](#testing)
-- [Building & Deployment](#building--deployment)
-- [Troubleshooting](#troubleshooting)
-- [Known Limitations](#known-limitations)
+**Last Updated:** 2026-10-13
+**Author:** Jorge Moreno
+**Version:** 2.0.0
 
 ---
 
 ## Project Overview
 
-XR18 AI Controller is a desktop application that provides intelligent, AI-powered control for Behringer digital mixing consoles. It monitors audio levels in real-time and can automatically adjust faders to prevent clipping while maintaining optimal signal levels.
-
-### Key Capabilities
-
-- **AI Mode**: Automatically adjusts levels based on statistical analysis and pattern recognition
-- **Manual Mode**: Full manual control with real-time metering
-- **Multi-Console**: Supports XR18 (16 channels), X32/M32 (32 channels)
-- **Cross-Platform**: Windows, macOS, Linux desktop application
-- **Real-time**: 50ms refresh rate for meters and adjustments
+The app monitors channel levels over OSC and, in AI mode, moves channel faders to prevent clipping and keep
+levels near a target. Everything runs in one Electron app: the React UI in the renderer, the mixer engine
+(OSC, AI, alerts, presets) in TypeScript in the main process. There is no Python and no local HTTP server.
 
 ### Use Cases
 
-1. Live sound reinforcement with automatic gain management
+1. Live sound reinforcement with automatic gain riding
 2. Recording sessions with consistent level monitoring
-3. Broadcast applications requiring constant levels
+3. Broadcast/streaming applications requiring constant levels
 4. Protection against sudden level spikes and clipping
 
 ---
@@ -51,908 +27,166 @@ XR18 AI Controller is a desktop application that provides intelligent, AI-powere
 
 ```
 xr18-ai-controller/
-├── backend/                          # Python FastAPI backend
-│   ├── app/
-│   │   ├── __init__.py
-│   │   ├── main.py                   # FastAPI application
-│   │   ├── config.py                 # Configuration settings
-│   │   ├── ai_controller.py          # AI level analysis logic
-│   │   └── adapters/                 # Mixer protocol adapters
-│   │       ├── __init__.py
-│   │       ├── base_adapter.py       # Abstract base adapter
-│   │       └── behringer_adapter.py  # XR18/X32/M32 implementation
-│   ├── tests/                        # Backend tests
-│   └── requirements.txt              # Python dependencies
-│
-├── frontend/                         # React + TypeScript frontend
-│   ├── src/
-│   │   ├── components/               # React components
-│   │   │   ├── ChannelStrip.tsx      # Individual channel control
-│   │   │   ├── MeterBar.tsx          # Level meter visualization
-│   │   │   ├── ConnectionPanel.tsx   # Mixer connection UI
-│   │   │   └── ModeControl.tsx       # AI/Manual mode toggle
-│   │   ├── hooks/
-│   │   │   └── useWebSocket.ts       # WebSocket connection hook
-│   │   ├── services/
-│   │   │   └── api.ts                # API client
-│   │   ├── types/
-│   │   │   └── index.ts              # TypeScript types
-│   │   ├── styles/
-│   │   │   └── index.css             # Global styles
-│   │   ├── App.tsx                   # Main application
-│   │   └── main.tsx                  # Entry point
-│   ├── public/
-│   ├── index.html
-│   ├── package.json
-│   ├── vite.config.ts                # Vite configuration
-│   ├── tsconfig.json                 # TypeScript configuration
-│   ├── tailwind.config.js            # Tailwind CSS configuration
-│   └── postcss.config.js
-│
-├── electron/                         # Electron wrapper
-│   ├── main.js                       # Electron main process
-│   └── preload.js                    # Preload script
-│
-├── installer/                        # Build resources
-│   └── icon.ico                      # Application icon
-│
-├── .github/
-│   └── workflows/                    # CI/CD pipelines
-│
-├── package.json                      # Root package.json
-├── .gitignore
-├── README.md
-└── CLAUDE.md                         # This file
+├── electron/                     # Main process (TypeScript, compiled to build/electron)
+│   ├── main.ts                   # Window, tray, single-instance lock, lifecycle
+│   ├── preload.ts                # Sandboxed bridge: exposes window.mixer
+│   ├── ipc.ts                    # One IPC channel ("mixer:call") → MixerEngine methods
+│   └── core/
+│       ├── engine.ts             # MixerEngine: connection, control loop, MixerApi
+│       ├── ai.ts                 # AIController (+ LearningModel)
+│       ├── alerts.ts             # AlertEngine
+│       ├── commandHistory.ts     # Undo/redo
+│       ├── presets.ts            # Preset validation + presets.json
+│       ├── store.ts              # Atomic JSON files in the user data folder
+│       ├── osc.ts                # OSC 1.0 encode/decode
+│       ├── audio.ts              # Fader law, meter blob parsing
+│       ├── adapters/
+│       │   ├── types.ts          # MixerAdapter interface
+│       │   ├── behringer.ts      # X32/M32 + X Air (XR12/16/18, MR18) over UDP; discovery
+│       │   └── demo.ts           # Simulated console
+│       └── *.test.ts             # Vitest
+├── shared/types.ts               # Types shared by engine and UI (type-only!)
+├── frontend/                     # React 18 + Vite + Tailwind UI
+│   └── src/
+│       ├── services/api.ts       # Typed wrapper over window.mixer
+│       ├── hooks/useMixerFeed.ts # Meter frames pushed from the engine
+│       └── components/           # ChannelStrip, AISettings, PresetManager, AlertSystem, ...
+├── scripts/                      # Windows network diagnostics (WiFi + USB setups)
+├── installer/                    # Icons (add icon.ico to get a tray icon)
+├── tsconfig.electron.json
+├── vitest.config.mts
+└── package.json                  # Electron app + engine; frontend has its own package.json
 ```
 
 ---
 
 ## Technology Stack
 
-### Backend
-
-- **Python 3.11+**
-  - FastAPI (web framework)
-  - Uvicorn (ASGI server)
-  - python-osc (OSC protocol implementation)
-  - NumPy (statistical analysis)
-  - Pydantic (data validation)
-
-### Frontend
-
-- **React 18**
-  - TypeScript (strict mode)
-  - Vite (build tool)
-  - Tailwind CSS (styling)
-  - Recharts (data visualization - optional)
-
-### Desktop
-
-- **Electron 28**
-  - System tray integration
-  - Auto-start capability
-  - Native window management
-
-### Protocols
-
-- **OSC (Open Sound Control)** over UDP
-  - XR18: Port 10024
-  - X32/M32: Port 10023
+- **Electron 43** (main process runs the mixer engine; renderer is sandboxed, `contextIsolation` on)
+- **TypeScript** everywhere (strict)
+- **React 18**, Vite, Tailwind CSS
+- **Vitest** for engine tests
+- **OSC over UDP**, implemented in `electron/core/osc.ts` (no dependency); X Air port 10024, X32/M32 port 10023
+- Persistence: JSON files in Electron's `userData` folder (`settings.json`, `presets.json`, `learning.json`)
 
 ---
 
-## Development Setup
-
-### Prerequisites
-
-1. **Python 3.11+**
-   ```bash
-   python --version
-   ```
-
-2. **Node.js 20+**
-   ```bash
-   node --version
-   npm --version
-   ```
-
-3. **Mixer on Network**
-   - Behringer XR18, X32, or M32
-   - Connected to same network as development machine
-   - Note the mixer's IP address
-
-### Installation
+## Development
 
 ```bash
-# Clone repository
-cd "C:\Users\jmoreno2\OneDrive - AutoZone Parts, Inc\Documents\GitHub"
-cd xr18-ai-controller
-
-# Install all dependencies (backend + frontend + electron)
-npm run install:all
-
-# Or install separately:
-npm run backend:install    # Install Python dependencies
-npm run frontend:install   # Install frontend dependencies
-npm install                # Install Electron dependencies
+npm run install:all     # npm install (root) + frontend
+npm run dev             # Vite dev server + tsc --watch + Electron
+npm test                # engine tests
+npm run typecheck       # engine types
+npm run lint --prefix frontend
+npm run build:win       # installer (also build:mac, build:linux)
 ```
 
-### Running in Development Mode
+`npm run dev` loads the UI from `http://localhost:5173`; packaged builds load `frontend/dist/index.html`
+(Vite `base: './'` keeps asset URLs relative for `file://`). After changing engine code, restart Electron
+(tsc recompiles automatically; the main process does not hot-reload).
 
-```bash
-# Start all services (backend + frontend + electron)
-npm run dev
-
-# Or run separately in different terminals:
-
-# Terminal 1: Backend (FastAPI)
-npm run backend:dev
-# Server runs on http://localhost:8000
-
-# Terminal 2: Frontend (Vite)
-npm run frontend:dev
-# Dev server runs on http://localhost:5173
-
-# Terminal 3: Electron
-npm run electron:dev
-```
-
-The Electron window will open automatically and connect to both the backend API and frontend dev server.
+The UI only works inside Electron: in a plain browser `window.mixer` is missing and API calls throw.
 
 ---
 
-## Key Features
-
-### 1. AI-Powered Level Control
-
-The AI controller uses statistical analysis to make intelligent decisions about level adjustments:
-
-- **Peak Detection**: Monitors for levels approaching 0dB (clipping risk)
-- **Average Analysis**: Tracks average levels over time
-- **Dynamic Response**: Adjusts to signal variability (music vs. speech)
-- **Headroom Management**: Maintains safe headroom to prevent distortion
-- **Confidence Scoring**: Only acts when confidence threshold is met
-
-**AI Algorithm:**
-```python
-# Key metrics analyzed:
-- Recent peak levels (last 10 samples)
-- Average level (100-sample window)
-- Standard deviation (signal dynamics)
-- Clipping risk (levels > -3dB)
-
-# Actions taken:
-- CRITICAL: Immediate reduction if peak > -3dB
-- HIGH: Reduce if exceeding max threshold
-- MEDIUM: Proactive reduction if low headroom with dynamic signal
-- LOW: Gentle increase if consistently too low
-```
-
-### 2. Multi-Console Support
-
-Modular adapter architecture allows support for different console models:
-
-**Current Support:**
-- ✅ Behringer XR18 (16 channels, 6 buses)
-- ✅ Behringer X32 (32 channels, 16 buses)
-- ✅ Midas M32 (32 channels, 16 buses)
-
-**Future Support (architecture ready):**
-- 🔲 Yamaha CL/QL series
-- 🔲 Allen & Heath SQ series
-- 🔲 Soundcraft Ui series
-
-### 3. Real-Time Metering
-
-- 50ms refresh rate (20 updates/second)
-- Color-coded meter bars:
-  - Green: Safe levels (-60dB to -12dB)
-  - Yellow: Hot levels (-12dB to -6dB)
-  - Orange: Warning levels (-6dB to -3dB)
-  - Red: Danger zone (-3dB to 0dB)
-- Peak indicators for transient detection
-- Statistical overlays (average, peak, standard deviation)
-
-### 4. Dual Control Modes
-
-**Manual Mode:**
-- Full control of all faders
-- Real-time meter feedback
-- Mute/unmute channels
-- No AI intervention
-
-**AI Mode:**
-- Automatic level adjustments
-- Manual control disabled (safety)
-- Visual feedback of AI decisions
-- Urgency-based color coding
-- Confidence indicators
-
----
-
-## Architecture & Design Patterns
-
-### Overall Architecture
+## Architecture
 
 ```
-┌─────────────────────────────────────────────────┐
-│         Electron (Desktop Shell)                │
-│  - Window management                            │
-│  - System tray                                  │
-│  - Python process lifecycle                     │
-└─────────────────────────────────────────────────┘
-         ↓                          ↓
-┌──────────────────┐      ┌──────────────────────┐
-│  React Frontend  │◄────►│  FastAPI Backend     │
-│  (Port 5173)     │ HTTP │  (Port 8000)         │
-│                  │ WS   │                      │
-│  - UI Components │      │  - OSC Client        │
-│  - Real-time     │      │  - AI Controller     │
-│    updates       │      │  - Mixer Adapters    │
-└──────────────────┘      └──────────────────────┘
-                                   ↓ OSC (UDP)
-                          ┌──────────────────────┐
-                          │  Behringer Mixer     │
-                          │  XR18 / X32 / M32    │
-                          └──────────────────────┘
+┌──────────── Renderer (React, sandboxed) ────────────┐
+│  apiService.call(...)          useMixerFeed()       │
+└───────┬───────────────────────────────▲─────────────┘
+        │ ipcRenderer.invoke            │ 'mixer:frame' (~20/s)
+        │ 'mixer:call' (method, args)   │
+┌───────▼───────────── Main process ────┴─────────────┐
+│ MixerEngine ── one control loop (50 ms tick):       │
+│   adapter.getChannels → ai.observe → ai.decide →    │
+│   adapter.setFader → alerts.check → emit frame      │
+│ Adapter: BehringerAdapter | DemoAdapter             │
+└───────┬─────────────────────────────────────────────┘
+        │ OSC / UDP (one socket: the console replies to the source port)
+   Behringer / Midas console
 ```
 
-### Design Patterns
-
-#### 1. Adapter Pattern (Mixer Support)
-
-**Purpose:** Abstract different mixer protocols behind common interface
-
-```python
-# Base interface
-class MixerAdapter(ABC):
-    @abstractmethod
-    async def connect(self, ip: str, port: int) -> bool
-    @abstractmethod
-    async def set_channel_fader(self, channel: int, value: float) -> bool
-    # ... more methods
-
-# Concrete implementations
-class BehringerAdapter(MixerAdapter):
-    # Implements OSC protocol for Behringer consoles
-    
-class YamahaAdapter(MixerAdapter):  # Future
-    # Would implement Yamaha's OSC variant
-```
-
-**Benefits:**
-- Easy to add new console brands
-- Same AI logic works with all adapters
-- Single frontend for all consoles
-
-#### 2. Observer Pattern (Real-time Updates)
-
-**Purpose:** Push meter updates to frontend without polling
-
-```python
-# Backend: WebSocket broadcasts
-async def websocket_meters(websocket: WebSocket):
-    while True:
-        channels = await mixer_adapter.get_all_channels()
-        await websocket.send_json({"channels": channels})
-        await asyncio.sleep(0.05)  # 50ms
-
-# Frontend: Hook subscribes to updates
-const { meterData } = useWebSocket();
-```
-
-#### 3. Strategy Pattern (AI vs Manual)
-
-**Purpose:** Switch between control strategies at runtime
-
-```python
-if ai_enabled:
-    decision = ai_controller.analyze_level(channel, level)
-    if decision.action != 'maintain':
-        await mixer_adapter.set_channel_fader(channel, decision.suggested_fader)
-else:
-    # Manual mode - user controls faders directly
-```
-
-### Communication Flow
-
-**1. Meter Updates (50ms cycle):**
-```
-Mixer → OSC meters → BehringerAdapter → FastAPI → WebSocket → React UI
-```
-
-**2. Manual Fader Change:**
-```
-React UI → API POST → FastAPI → BehringerAdapter → OSC command → Mixer
-```
-
-**3. AI Adjustment:**
-```
-Mixer → meters → AI analysis → decision → OSC command → Mixer
-                                  ↓
-                            WebSocket → React (notification)
-```
-
----
-
-## API Documentation
-
-### REST Endpoints
-
-#### POST /api/mixer/connect
-Connect to mixer console.
-
-**Request:**
-```json
-{
-  "mixer_model": "xr18",  // or "x32", "m32"
-  "ip_address": "192.168.1.1",
-  "port": 10024  // optional, defaults based on model
-}
-```
-
-**Response:**
-```json
-{
-  "status": "connected",
-  "mixer_info": {
-    "name": "Behringer XR18",
-    "model": "XR18",
-    "ip": "192.168.1.1",
-    "port": 10024,
-    "channels": 16,
-    "buses": 6
-  }
-}
-```
-
-#### POST /api/mixer/disconnect
-Disconnect from mixer.
-
-**Response:**
-```json
-{
-  "status": "disconnected"
-}
-```
-
-#### POST /api/mode/set
-Set AI or manual mode.
-
-**Request:**
-```json
-{
-  "ai_enabled": true
-}
-```
-
-**Response:**
-```json
-{
-  "ai_enabled": true,
-  "message": "AI mode enabled"
-}
-```
-
-#### POST /api/channel/fader
-Set channel fader (manual mode only).
-
-**Request:**
-```json
-{
-  "channel": 1,
-  "value": 0.75  // 0.0 - 1.0
-}
-```
-
-**Response:**
-```json
-{
-  "status": "success",
-  "channel": 1,
-  "value": 0.75
-}
-```
-
-#### POST /api/channel/mute
-Mute or unmute channel.
-
-**Request:**
-```json
-{
-  "channel": 1,
-  "mute": true
-}
-```
-
-**Response:**
-```json
-{
-  "status": "success",
-  "channel": 1,
-  "muted": true
-}
-```
-
-### WebSocket
-
-#### WS /ws/meters
-Real-time meter updates and AI decisions.
-
-**Message Format:**
-```json
-{
-  "timestamp": 1719964800.123,
-  "ai_enabled": true,
-  "channels": [
-    {
-      "channel": 1,
-      "name": "Vocal",
-      "level_db": -12.5,
-      "fader_value": 0.75,
-      "muted": false,
-      "stats": {
-        "samples": 100,
-        "avg_db": -15.2,
-        "max_db": -8.3,
-        "std_dev": 4.2,
-        "recent_peak": -10.1
-      }
-    }
-  ],
-  "ai_decisions": [
-    {
-      "channel": 3,
-      "action": "reduce",
-      "current_level": -4.2,
-      "new_fader": 0.68,
-      "reason": "Peak -4.2dB exceeds threshold -6.0dB",
-      "urgency": "high",
-      "confidence": 0.95
-    }
-  ]
-}
-```
-
----
-
-## Development Commands
-
-### Backend
-
-```bash
-# Navigate to backend
-cd backend
-
-# Create virtual environment
-python -m venv venv
-
-# Activate (Windows)
-venv\Scripts\activate
-
-# Activate (macOS/Linux)
-source venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Run development server
-python -m app.main
-
-# Run with auto-reload
-uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
-
-# Run tests
-pytest
-pytest -v  # verbose
-pytest --cov  # with coverage
-```
-
-### Frontend
-
-```bash
-# Navigate to frontend
-cd frontend
-
-# Install dependencies
-npm install
-
-# Run development server
-npm run dev
-
-# Build for production
-npm run build
-
-# Preview production build
-npm run preview
-
-# Type check
-npm run type-check
-
-# Lint
-npm run lint
-npm run lint:fix
-```
-
-### Electron
-
-```bash
-# From project root
-
-# Install dependencies
-npm install
-
-# Run in development
-npm run electron:dev
-
-# Build for current platform
-npm run build
-
-# Build for specific platform
-npm run build:win     # Windows installer
-npm run build:mac     # macOS dmg
-npm run build:linux   # Linux AppImage
-```
-
-### Full Stack Development
-
-```bash
-# Run everything at once (recommended)
-npm run dev
-
-# This starts:
-# 1. Python backend (port 8000)
-# 2. Vite dev server (port 5173)
-# 3. Electron window (loads when both ready)
-```
-
----
-
-## Configuration
-
-### Backend Configuration
-
-**File:** `backend/app/config.py`
-
-```python
-class Settings(BaseSettings):
-    # XR18 Mixer Configuration
-    xr18_ip: str = "192.168.1.1"
-    xr18_port: int = 10024
-    xr18_channels: int = 16
-
-    # Audio Level Thresholds (dB)
-    max_threshold_db: float = -6.0      # Start reducing above this
-    target_level_db: float = -12.0      # Ideal target level
-    min_threshold_db: float = -40.0     # Boost if below this
-
-    # AI Configuration
-    ai_history_window: int = 100        # Samples to analyze
-    ai_confidence_threshold: float = 0.7  # Minimum confidence to act
-
-    # Server Configuration
-    host: str = "127.0.0.1"
-    port: int = 8000
-    reload: bool = True
-
-    # WebSocket Configuration
-    ws_refresh_rate_ms: int = 50        # 20 updates/second
-```
-
-**Override with .env file:**
-```bash
-# backend/.env
-XR18_IP=192.168.10.100
-MAX_THRESHOLD_DB=-8.0
-TARGET_LEVEL_DB=-15.0
-```
-
-### Frontend Configuration
-
-**File:** `frontend/src/services/api.ts`
-
-```typescript
-const API_BASE_URL = 'http://localhost:8000';
-```
-
-For production builds, this would be `http://127.0.0.1:8000` (same machine).
-
-### Electron Configuration
-
-**File:** `electron/main.js`
-
-```javascript
-// Window size
-width: 1400,
-height: 900,
-minWidth: 1200,
-minHeight: 700,
-
-// Background color (matches UI)
-backgroundColor: '#1a1a1a',
-```
-
----
-
-## Testing
-
-### Backend Tests
-
-```bash
-cd backend
-
-# Run all tests
-pytest
-
-# Run specific test file
-pytest tests/test_ai_controller.py
-
-# Run with coverage
-pytest --cov=app --cov-report=html
-
-# Run with verbose output
-pytest -v -s
-```
-
-**Test Structure:**
-```
-backend/tests/
-├── test_adapters.py          # Adapter tests
-├── test_ai_controller.py     # AI logic tests
-└── test_api.py               # API endpoint tests
-```
-
-### Frontend Tests
-
-```bash
-cd frontend
-
-# Run tests (when implemented)
-npm test
-
-# Run with coverage
-npm run test:coverage
-```
-
----
-
-## Building & Deployment
-
-### Create Production Build
-
-```bash
-# From project root
-
-# Build Windows installer
-npm run build:win
-
-# Output: dist/xr18-ai-controller-Setup-1.0.0.exe
-```
-
-### Build Process
-
-1. **Frontend Build**
-   - Vite compiles React + TypeScript
-   - Output: `frontend/dist/` (static files)
-
-2. **Backend Package**
-   - Python files copied to resources
-   - Dependencies bundled (or require Python installed)
-
-3. **Electron Package**
-   - Creates native executable
-   - Bundles frontend dist
-   - Includes Python backend
-   - Creates installer
-
-### Installer Contents
-
-```
-XR18 AI Controller/
-├── xr18-ai-controller.exe    # Electron executable
-├── resources/
-│   ├── app.asar              # Electron app bundle
-│   └── backend/              # Python backend
-│       ├── app/
-│       └── requirements.txt
-└── (Electron runtime files)
-```
-
-### Distribution
-
-**Windows:**
-- `.exe` installer (NSIS)
-- Installs to `C:\Program Files\XR18 AI Controller\`
-- Creates desktop shortcut
-- Adds to Start Menu
-
-**macOS:**
-- `.dmg` disk image
-- Drag to Applications folder
-
-**Linux:**
-- `.AppImage` (portable)
-- No installation required
+- **Single control loop** in the engine, independent of how many windows are open. The AI runs exactly once
+  per tick, and keeps running if the window is hidden in the tray.
+- **IPC contract**: `MixerApi` in `shared/types.ts`. `ipc.ts` whitelists method names; errors return as
+  `{ ok: false, error }` and `apiService` rethrows them as `Error(message)`.
+- `shared/types.ts` must stay type-only: the sandboxed preload can only `require('electron')`, and Vite
+  does not bundle files outside `frontend/`.
+
+### OSC details (Behringer)
+
+- Connect = `/xinfo` handshake (retries for 2.5 s). Its reply gives name, model and firmware; the model
+  string sets the channel count (XR12 → 12, XR16/XR18/MR18 → 16, X32/M32 → 32).
+- Subscriptions (`/xremote` and `/meters ,s /meters/1`) expire after 10 s and are renewed every 8 s.
+- `/meters/1` is a blob: little-endian int32 count, then values. X Air sends int16 in 1/256 dB, X32 sends
+  float32 linear. `parseMeterBlob` derives the width from the blob size.
+- On connect (and after a link drop) the adapter queries `mix/fader`, `mix/on` and `config/name` for every channel.
+- `mix/on`: 1 = channel on, 0 = muted. Faders are floats 0..1 with the console's piecewise fader law
+  (`audio.ts`: 0.75 = 0 dB, 1.0 = +10 dB, 0.5 = −10, 0.25 = −30, 0.0625 = −60).
+- Link watchdog: no packets for 2 s → ping with `/xinfo`; for 4.5 s → link `lost`. The first packet back
+  marks it `connected` and re-subscribes and re-reads state.
+- Fader updates from the console that don't match what the app just sent are reported as
+  `externalFader` (someone moved the desk).
+
+### AI (electron/core/ai.ts)
+
+- Keeps a **fader-independent source history** per channel: `meter` for pre-fader meters,
+  `meter − fader dB` for post-fader. Output stats = source + current fader dB, so a fader move is reflected
+  immediately and corrections don't compound. The meter tap is a setting (`meterTap`, default `pre`);
+  the demo adapter is always post-fader.
+- Decision rules (critical peak > −3 dB, peak over max threshold, sustained low level, low headroom) produce
+  a dB change, shaped by the learning model, then:
+  - non-critical moves need `confidence ≥ confidenceThreshold`;
+  - per-step limit `1 + 5 × adjustmentSpeed` dB (criticals go all the way);
+  - a settle delay after each move (300 ms critical, otherwise `2000 × (1.2 − speed)` ms);
+  - the fader stays within **`maxCutDb` / `maxBoostDb` of the reference fader**: the position when AI mode
+    was switched on, or the engineer's latest desk move;
+  - channels averaging below −50 dB, or silent most of the time, are never boosted.
+- While the link is `lost` the AI holds everything. Muted channels are skipped. A desk move on a channel
+  pauses the AI on that channel for 10 s and becomes its new reference.
+
+### Learning
+
+Manual moves (UI drags and desk moves) are grouped into gestures (600 ms gap) and recorded as one sample each.
+After 10 samples a channel gets a style: aggressive (AI moves ×1.25), moderate, or conservative (×0.5).
+Saved automatically to `learning.json` (v1.0 format, compatible with the Python version's files).
+
+### Alerts (electron/core/alerts.ts)
+
+Clipping risk (N consecutive hot samples), low signal and noise floor (measured in wall-clock time), and
+sudden drop (recent average falls to silence). Each alert type has a per-channel cooldown (30 s).
+Frames carry only newly raised alerts; the UI's AlertSystem accumulates them.
 
 ---
 
 ## Troubleshooting
 
-### Connection Issues
+**"No response from <ip>:<port>"**: nothing answered `/xinfo`. Check the IP (or use *Find mixers*), that
+this computer is on the console's network, and that the firewall allows UDP. With WiFi + USB/Ethernet at the
+same time, see `scripts/verify-dual-setup.bat`.
 
-**Problem:** Cannot connect to mixer
+**Header shows "Mixer Not Responding"**: packets stopped. The app keeps renewing and recovers by itself.
 
-**Solutions:**
-1. Verify mixer is on same network
-   ```bash
-   ping 192.168.1.1
-   ```
+**AI keeps pulling a channel down to its limit**: the meter tap setting is probably wrong for the console.
+If the console's channel meters don't move when you move the fader, use *Pre-fader*.
 
-2. Check mixer IP address (may have changed)
-   - XR18: Connect to mixer WiFi, go to `192.168.1.1`
-   - X32: Check network settings on console
-
-3. Verify correct port:
-   - XR18: 10024
-   - X32/M32: 10023
-
-4. Disable firewall temporarily to test
-   ```bash
-   # Windows: Temporarily disable Windows Firewall
-   # Or add exception for port 10024/10023
-   ```
-
-5. Check mixer firmware supports OSC control
-
-### Backend Startup Issues
-
-**Problem:** Python backend doesn't start
-
-**Solutions:**
-1. Check Python version
-   ```bash
-   python --version  # Should be 3.11+
-   ```
-
-2. Reinstall dependencies
-   ```bash
-   cd backend
-   pip install --upgrade -r requirements.txt
-   ```
-
-3. Check for port conflicts
-   ```bash
-   # Windows
-   netstat -ano | findstr :8000
-   
-   # macOS/Linux
-   lsof -i :8000
-   ```
-
-### WebSocket Connection Issues
-
-**Problem:** Frontend not receiving updates
-
-**Solutions:**
-1. Check WebSocket connection in browser console
-   ```
-   Failed to connect to ws://localhost:8000/ws/meters
-   ```
-
-2. Verify backend is running
-   ```
-   curl http://localhost:8000/
-   ```
-
-3. Clear browser cache and reload
-
-### AI Not Adjusting Levels
-
-**Problem:** AI mode enabled but no adjustments
-
-**Checklist:**
-1. ✅ Mixer connected
-2. ✅ AI mode enabled (toggle shows purple)
-3. ✅ Channels have signal (meters showing activity)
-4. ✅ Levels actually exceeding thresholds (check settings)
-
-**Debug:**
-- Check browser console for AI decisions
-- Verify threshold settings in `backend/app/config.py`
-- Look for AI decisions in WebSocket messages
-
-### Build Issues
-
-**Problem:** Electron build fails
-
-**Solutions:**
-1. Clean and rebuild
-   ```bash
-   rm -rf node_modules dist frontend/dist
-   npm run install:all
-   npm run build
-   ```
-
-2. Check Node.js version
-   ```bash
-   node --version  # Should be 20+
-   ```
-
-3. Windows: Install windows-build-tools
-   ```bash
-   npm install --global windows-build-tools
-   ```
+**No tray icon**: add `installer/icon.ico` (see `installer/ICON_README.txt`).
 
 ---
 
 ## Known Limitations
 
-### Current Version (1.0.0)
-
-1. **Single Mixer Connection**
-   - Can only control one mixer at a time
-   - Future: Multi-mixer support
-
-2. **Behringer Only**
-   - Currently supports XR18, X32, M32
-   - Architecture ready for Yamaha, Allen & Heath, etc.
-
-3. **Basic AI Algorithm**
-   - Statistical analysis only
-   - Future: Machine learning models, pattern recognition
-
-4. **No Mixer State Persistence**
-   - Doesn't save/load mixer scenes
-   - Future: Scene management integration
-
-5. **Network Only**
-   - Requires mixer on network
-   - No USB/MIDI control
-
-6. **English Only**
-   - UI only in English
-   - Future: Internationalization
-
-### Performance Limits
-
-- **Recommended:** 32 channels max (X32/M32)
-- **Refresh Rate:** Fixed at 50ms (20Hz)
-- **History Window:** 100 samples (5 seconds at 20Hz)
-
-### OSC Protocol Limitations
-
-- One-way communication for meters (no confirmation)
-- Latency depends on network quality
-- No mixer state synchronization on connect
-
----
-
-## Future Enhancements
-
-### Phase 2
-- [ ] Yamaha CL/QL adapter
-- [ ] Allen & Heath SQ adapter
-- [ ] Scene save/load integration
-- [ ] Advanced ML models
-
-### Phase 3
-- [ ] Multi-mixer control
-- [ ] Cloud sync of settings
-- [ ] Mobile app (iOS/Android)
-- [ ] Plugin system for custom processors
+- Controls channel faders and mutes only (no buses/aux sends, no preamp gain)
+- One mixer at a time
+- Meter tap must be set by hand (no auto-detection yet)
+- UI in English only
 
 ---
 
 ## Support
 
-For issues, questions, or contributions:
-
 - **Author:** Jorge Moreno
 - **Project:** https://github.com/jmoreno2/xr18-ai-controller
 - **Organization:** AutoZone/ALLDATA
-
----
-
-**Version:** 1.0.0  
-**Last Updated:** 2026-07-03  
-**Platform:** Windows / macOS / Linux
