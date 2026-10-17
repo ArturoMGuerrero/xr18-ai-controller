@@ -76,10 +76,6 @@ export const useTheme = () => {
   }, [customColors, currentTheme]);
 
   useEffect(() => {
-    applyTheme();
-  }, [currentTheme, customColors]);
-
-  const applyTheme = () => {
     const colors = currentTheme === 'custom' ? customColors : themes[currentTheme];
 
     document.documentElement.style.setProperty('--color-bg', colors.bg);
@@ -88,7 +84,7 @@ export const useTheme = () => {
     document.documentElement.style.setProperty('--color-accent', colors.accent);
     document.documentElement.style.setProperty('--color-text', colors.text);
     document.documentElement.style.setProperty('--color-text-secondary', colors.textSecondary);
-  };
+  }, [currentTheme, customColors]);
 
   const changeTheme = (theme: Theme) => {
     setCurrentTheme(theme);

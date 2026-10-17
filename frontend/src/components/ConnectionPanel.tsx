@@ -1,5 +1,9 @@
 import React, { useState } from 'react';
-import { ConnectionConfig, MixerInfo } from '../types';
+import { ConnectionConfig, DiscoveredMixer, MixerInfo } from '../types';
+import { apiService } from '../services/api';
+
+const modelFromReported = (model: string): 'xr18' | 'x32' | 'm32' =>
+  /^M32/i.test(model) ? 'm32' : /^X32/i.test(model) ? 'x32' : 'xr18';
 
 interface ConnectionPanelProps {
   onConnect: (config: ConnectionConfig) => Promise<void>;
@@ -18,6 +22,26 @@ export const ConnectionPanel: React.FC<ConnectionPanelProps> = ({
   const [ipAddress, setIpAddress] = useState('192.168.1.1');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [searching, setSearching] = useState(false);
+  const [found, setFound] = useState<DiscoveredMixer[] | null>(null);
+
+  const handleSearch = async () => {
+    setSearching(true);
+    setError(null);
+    try {
+      setFound(await apiService.discoverMixers());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Search failed');
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  const handlePick = (mixer: DiscoveredMixer) => {
+    setModel(modelFromReported(mixer.model));
+    setIpAddress(mixer.ip);
+    setFound(null);
+  };
 
   const handleConnect = async () => {
     setLoading(true);
@@ -104,6 +128,36 @@ export const ConnectionPanel: React.FC<ConnectionPanelProps> = ({
               <p className="text-xs text-yellow-400 mt-1">
                 ⚠️ Demo mode generates simulated audio data (no physical mixer required)
               </p>
+            )}
+            {model !== 'demo' && (
+              <button
+                onClick={handleSearch}
+                disabled={searching || loading}
+                className="mt-2 text-sm text-mixer-accent hover:text-blue-400 disabled:text-gray-500"
+              >
+                {searching ? 'Searching the network…' : '🔍 Find mixers on the network'}
+              </button>
+            )}
+            {found && (
+              <div className="mt-2 space-y-1">
+                {found.length === 0 ? (
+                  <p className="text-xs text-gray-400">
+                    No mixers answered. Check that this computer is on the mixer&apos;s network.
+                  </p>
+                ) : (
+                  found.map((mixer) => (
+                    <button
+                      key={mixer.ip}
+                      onClick={() => handlePick(mixer)}
+                      className="w-full text-left bg-mixer-fader hover:bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm"
+                    >
+                      <span className="text-white font-medium">{mixer.name || mixer.model}</span>
+                      <span className="text-gray-400"> · {mixer.model} · </span>
+                      <span className="text-gray-300 font-mono">{mixer.ip}</span>
+                    </button>
+                  ))
+                )}
+              </div>
             )}
           </div>
 

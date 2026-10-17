@@ -1,4 +1,5 @@
-import React, { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
+import { AlertSystem } from './components/AlertSystem';
 import { ConnectionPanel } from './components/ConnectionPanel';
 import { ModeControl } from './components/ModeControl';
 import { ChannelStrip } from './components/ChannelStrip';
@@ -8,13 +9,19 @@ import { ThemeSelector } from './components/ThemeSelector';
 import { HelpModal } from './components/HelpModal';
 import { PresetManager } from './components/PresetManager';
 import { LearningMode } from './components/LearningMode';
-import { useWebSocket } from './hooks/useWebSocket';
+import { useMixerFeed } from './hooks/useMixerFeed';
 import { useTheme } from './hooks/useTheme';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { apiService } from './services/api';
-import { ConnectionConfig, MixerInfo } from './types';
+import { ConnectionConfig, LinkState, MixerInfo } from './types';
 
-type Tab = 'mixer' | 'dashboard' | 'ai-settings' | 'presets' | 'learning' | 'themes';
+type Tab = 'mixer' | 'dashboard' | 'alerts' | 'ai-settings' | 'presets' | 'learning' | 'themes';
+
+const LINK_LABELS: Record<LinkState, { text: string; dot: string }> = {
+  connected: { text: 'Mixer Connected', dot: 'bg-green-500 animate-pulse' },
+  lost: { text: 'Mixer Not Responding', dot: 'bg-yellow-500 animate-pulse' },
+  disconnected: { text: 'Mixer Disconnected', dot: 'bg-gray-500' },
+};
 
 function App() {
   const [mixerInfo, setMixerInfo] = useState<MixerInfo | null>(null);
@@ -23,14 +30,28 @@ function App() {
   const [activeTab, setActiveTab] = useState<Tab>('mixer');
   const [showHelp, setShowHelp] = useState(false);
 
-  const { meterData, connected: wsConnected } = useWebSocket();
+  const { meterData, recentDecisions, clearDecisions, link } = useMixerFeed();
   const { currentTheme } = useTheme();
+
+  // The engine outlives the window (e.g. a reload): pick up its state on start.
+  useEffect(() => {
+    apiService
+      .getStatus()
+      .then((status) => {
+        setMixerInfo(status.mixer_info);
+        setMixerConnected(status.mixer_info !== null);
+        setAiEnabled(status.ai_enabled);
+      })
+      .catch((error) => console.error('Failed to read engine status:', error));
+  }, []);
 
   const handleConnect = useCallback(async (config: ConnectionConfig) => {
     const result = await apiService.connectMixer(config);
     setMixerInfo(result.mixer_info);
     setMixerConnected(true);
-  }, []);
+    setAiEnabled(false);
+    clearDecisions();
+  }, [clearDecisions]);
 
   const handleDisconnect = useCallback(async () => {
     await apiService.disconnectMixer();
@@ -42,6 +63,22 @@ function App() {
   const handleModeToggle = useCallback(async (enabled: boolean) => {
     await apiService.setAIMode(enabled);
     setAiEnabled(enabled);
+  }, []);
+
+  const handleUndo = useCallback(async () => {
+    try {
+      await apiService.undo();
+    } catch (error) {
+      console.error('Undo failed:', error);
+    }
+  }, []);
+
+  const handleRedo = useCallback(async () => {
+    try {
+      await apiService.redo();
+    } catch (error) {
+      console.error('Redo failed:', error);
+    }
   }, []);
 
   const handleFaderChange = useCallback(async (channel: number, value: number) => {
@@ -109,10 +146,13 @@ function App() {
     onIncreaseChannel: handleIncreaseChannel,
     onDecreaseChannel: handleDecreaseChannel,
     onMuteChannel: handleMuteChannel,
+    onUndo: handleUndo,
+    onRedo: handleRedo,
   });
 
   const channels = meterData?.channels || [];
-  const aiDecisions = meterData?.ai_decisions || [];
+  const aiDecisions = recentDecisions;
+  const linkLabel = LINK_LABELS[mixerConnected ? link : 'disconnected'];
 
   return (
     <div className="min-h-screen bg-mixer-bg text-white">
@@ -132,24 +172,8 @@ function App() {
           {/* Status Indicators */}
           <div className="flex items-center space-x-4">
             <div className="flex items-center space-x-2">
-              <div
-                className={`w-2 h-2 rounded-full ${
-                  wsConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'
-                }`}
-              />
-              <span className="text-sm text-gray-400">
-                WebSocket {wsConnected ? 'Connected' : 'Disconnected'}
-              </span>
-            </div>
-            <div className="flex items-center space-x-2">
-              <div
-                className={`w-2 h-2 rounded-full ${
-                  mixerConnected ? 'bg-green-500 animate-pulse' : 'bg-gray-500'
-                }`}
-              />
-              <span className="text-sm text-gray-400">
-                Mixer {mixerConnected ? 'Connected' : 'Disconnected'}
-              </span>
+              <div className={`w-2 h-2 rounded-full ${linkLabel.dot}`} />
+              <span className="text-sm text-gray-400">{linkLabel.text}</span>
             </div>
             <button
               onClick={() => setShowHelp(true)}
@@ -169,6 +193,7 @@ function App() {
             {[
               { id: 'mixer' as Tab, label: 'Mixer Control', icon: '🎚️' },
               { id: 'dashboard' as Tab, label: 'Dashboard', icon: '📊' },
+              { id: 'alerts' as Tab, label: 'Alerts', icon: '🚨' },
               { id: 'ai-settings' as Tab, label: 'AI Settings', icon: '⚙️' },
               { id: 'presets' as Tab, label: 'Presets', icon: '💾' },
               { id: 'learning' as Tab, label: 'Learning Mode', icon: '🧠' },
@@ -256,6 +281,11 @@ function App() {
           <Dashboard channels={channels} aiDecisions={aiDecisions} aiEnabled={aiEnabled} />
         )}
 
+        {/* Alerts Tab: always mounted so alerts (and their sounds) arrive on any tab */}
+        <div className={activeTab === 'alerts' ? '' : 'hidden'}>
+          <AlertSystem backendAlerts={meterData?.alerts} />
+        </div>
+
         {/* AI Settings Tab */}
         {activeTab === 'ai-settings' && <AISettings />}
 
@@ -275,7 +305,7 @@ function App() {
       {/* Footer */}
       <footer className="bg-mixer-panel border-t border-gray-700 px-6 py-4 mt-8">
         <div className="flex items-center justify-between text-sm text-gray-500">
-          <div>XR18 AI Controller v1.1.0 | Built with React + FastAPI + OSC</div>
+          <div>XR18 AI Controller v2.0.0 | Built with React + Electron + OSC</div>
           <div className="flex items-center space-x-4">
             <span>Theme: {currentTheme}</span>
             <span>Press F1 for keyboard shortcuts</span>

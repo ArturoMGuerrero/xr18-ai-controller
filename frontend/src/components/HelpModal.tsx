@@ -28,6 +28,8 @@ export const HelpModal: React.FC<HelpModalProps> = ({ isOpen, onClose }) => {
         { keys: shortcuts.muteChannel, description: 'Toggle channel mute' },
         { keys: shortcuts.muteAll, description: 'Mute all channels' },
         { keys: shortcuts.unmuteAll, description: 'Unmute all channels' },
+        { keys: shortcuts.undo, description: 'Undo last manual change' },
+        { keys: shortcuts.redo, description: 'Redo' },
         { keys: shortcuts.resetLevels, description: 'Reset all levels to default' },
       ],
     },

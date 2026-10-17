@@ -1,13 +1,8 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import { AIConfig, MeterTap } from '../types';
+import { apiService } from '../services/api';
 
-interface AIConfig {
-  maxThreshold: number;
-  targetLevel: number;
-  minThreshold: number;
-  historyWindow: number;
-  confidenceThreshold: number;
-  adjustmentSpeed: number;
-}
+type NumericKey = Exclude<keyof AIConfig, 'meterTap'>;
 
 export const AISettings: React.FC = () => {
   const [config, setConfig] = useState<AIConfig>({
@@ -17,7 +12,17 @@ export const AISettings: React.FC = () => {
     historyWindow: 100,
     confidenceThreshold: 0.7,
     adjustmentSpeed: 0.8,
+    maxCutDb: 12,
+    maxBoostDb: 6,
+    meterTap: 'pre',
   });
+
+  useEffect(() => {
+    apiService
+      .getAIConfig()
+      .then(setConfig)
+      .catch((error) => console.error('Failed to load AI config:', error));
+  }, []);
 
   const [selectedPreset, setSelectedPreset] = useState<string>('custom');
 
@@ -61,25 +66,22 @@ export const AISettings: React.FC = () => {
     }
   };
 
-  const handleConfigChange = (key: keyof AIConfig, value: number) => {
+  const handleConfigChange = (key: NumericKey, value: number) => {
     setConfig((prev) => ({ ...prev, [key]: value }));
     setSelectedPreset('custom');
   };
 
+  const handleTapChange = (meterTap: MeterTap) => {
+    setConfig((prev) => ({ ...prev, meterTap }));
+  };
+
   const handleSave = async () => {
     try {
-      const response = await fetch('http://localhost:8000/api/ai/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(config),
-      });
-
-      if (response.ok) {
-        alert('AI configuration saved successfully!');
-      }
+      await apiService.updateAIConfig(config);
+      alert('AI configuration saved successfully!');
     } catch (error) {
       console.error('Failed to save AI config:', error);
-      alert('Failed to save configuration');
+      alert(`Failed to save configuration: ${error instanceof Error ? error.message : error}`);
     }
   };
 
@@ -188,6 +190,54 @@ export const AISettings: React.FC = () => {
           description="How quickly AI adjusts levels (higher = faster)"
           showPercentage
         />
+      </div>
+
+      {/* Safety Limits */}
+      <div className="space-y-4 border-t border-gray-700 pt-4">
+        <h4 className="text-sm font-medium text-gray-400">Safety Limits</h4>
+
+        <Slider
+          label="Max Cut (dB)"
+          value={config.maxCutDb}
+          onChange={(value) => handleConfigChange('maxCutDb', value)}
+          min={0}
+          max={30}
+          step={1}
+          description="The AI never pulls a fader more than this below where you left it"
+        />
+
+        <Slider
+          label="Max Boost (dB)"
+          value={config.maxBoostDb}
+          onChange={(value) => handleConfigChange('maxBoostDb', value)}
+          min={0}
+          max={12}
+          step={1}
+          description="The AI never pushes a fader more than this above where you left it (feedback risk)"
+        />
+
+        <div className="space-y-2">
+          <label className="text-sm text-white">Mixer Meter Tap</label>
+          <div className="grid grid-cols-2 gap-2">
+            {(['pre', 'post'] as MeterTap[]).map((tap) => (
+              <button
+                key={tap}
+                onClick={() => handleTapChange(tap)}
+                className={`px-4 py-2 rounded border-2 text-sm font-medium transition-all ${
+                  config.meterTap === tap
+                    ? 'border-mixer-accent bg-mixer-accent/20 text-white'
+                    : 'border-gray-600 text-gray-400 hover:border-gray-500'
+                }`}
+              >
+                {tap === 'pre' ? 'Pre-fader' : 'Post-fader'}
+              </button>
+            ))}
+          </div>
+          <p className="text-xs text-gray-500">
+            Whether the mixer&apos;s channel meters change when a fader moves. Pre-fader: they don&apos;t (the AI adds the
+            fader gain itself). Demo mode always uses post-fader.
+          </p>
+        </div>
       </div>
 
       {/* Visual Preview */}

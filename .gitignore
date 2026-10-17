@@ -1,31 +1,16 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-env/
-venv/
-ENV/
-backend/venv/
-*.egg-info/
-dist-python/
-build/
-*.egg
-
 # Node
 node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-package-lock.json
-yarn.lock
+
+# Compiled Electron code
+build/
 
 # Frontend build
 frontend/dist/
-frontend/build/
 
-# Electron
+# Electron installers
 dist/
 out/
 *.exe
@@ -52,8 +37,3 @@ desktop.ini
 # Logs
 logs/
 *.log
-backend/logs/
-
-# User data (learning data, sessions)
-backend/data/
-!backend/data/.gitkeep

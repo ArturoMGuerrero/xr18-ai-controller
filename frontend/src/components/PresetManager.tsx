@@ -39,8 +39,8 @@ export const PresetManager: React.FC = () => {
       setNewPresetDescription('');
       setShowSaveDialog(false);
       await loadPresets();
-    } catch (error: any) {
-      showMessage('error', error.message || 'Failed to save preset');
+    } catch (error) {
+      showMessage('error', (error instanceof Error && error.message) || 'Failed to save preset');
     } finally {
       setLoading(false);
     }
@@ -51,8 +51,8 @@ export const PresetManager: React.FC = () => {
     try {
       await apiService.loadPreset(name);
       showMessage('success', `Preset "${name}" loaded successfully`);
-    } catch (error: any) {
-      showMessage('error', error.message || 'Failed to load preset');
+    } catch (error) {
+      showMessage('error', (error instanceof Error && error.message) || 'Failed to load preset');
     } finally {
       setLoading(false);
     }
@@ -66,8 +66,8 @@ export const PresetManager: React.FC = () => {
       await apiService.deletePreset(name);
       showMessage('success', `Preset "${name}" deleted`);
       await loadPresets();
-    } catch (error: any) {
-      showMessage('error', error.message || 'Failed to delete preset');
+    } catch (error) {
+      showMessage('error', (error instanceof Error && error.message) || 'Failed to delete preset');
     } finally {
       setLoading(false);
     }
@@ -84,8 +84,8 @@ export const PresetManager: React.FC = () => {
       a.click();
       URL.revokeObjectURL(url);
       showMessage('success', `Preset "${name}" exported`);
-    } catch (error: any) {
-      showMessage('error', error.message || 'Failed to export preset');
+    } catch (error) {
+      showMessage('error', (error instanceof Error && error.message) || 'Failed to export preset');
     }
   };
 
@@ -103,8 +103,8 @@ export const PresetManager: React.FC = () => {
       setImportJson('');
       setShowImportDialog(false);
       await loadPresets();
-    } catch (error: any) {
-      showMessage('error', error.message || 'Invalid JSON or import failed');
+    } catch (error) {
+      showMessage('error', (error instanceof Error && error.message) || 'Invalid JSON or import failed');
     } finally {
       setLoading(false);
     }
@@ -200,7 +200,7 @@ export const PresetManager: React.FC = () => {
         <div className="text-center text-gray-500 py-12">
           <div className="text-5xl mb-3">🎛️</div>
           <div className="text-lg font-medium">No presets saved</div>
-          <div className="text-sm">Click "Save Current" to create your first preset</div>
+          <div className="text-sm">Click &quot;Save Current&quot; to create your first preset</div>
         </div>
       )}
 

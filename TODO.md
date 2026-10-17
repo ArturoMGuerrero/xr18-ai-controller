@@ -2,69 +2,47 @@
 
 ## Before First Run
 
-- [ ] Install Python 3.11+ (`python --version`)
-- [ ] Install Node.js 20+ (`node --version`)
-- [ ] Run setup script: `setup.bat` (Windows) or `./setup.sh` (macOS/Linux)
-- [ ] Create icon file: `installer/icon.ico` (see `installer/ICON_README.txt`)
-- [ ] Configure mixer IP in `backend/.env`
+- [ ] Install Node.js 22 (`node --version`)
+- [ ] Run `npm run install:all`
+- [ ] Create icon file: `installer/icon.ico` (see `installer/ICON_README.txt`) for the tray icon
 
 ## Testing Connectivity
 
 - [ ] Power on Behringer mixer
 - [ ] Connect mixer to network (WiFi or Ethernet)
-- [ ] Find mixer IP address
+- [ ] In the app, click **Find mixers on the network** (or enter the IP)
   - XR18: Connect to mixer WiFi, usually `192.168.1.1`
   - X32: Check network settings on console
-- [ ] Test connection: `ping <mixer-ip>`
-- [ ] Verify OSC port is accessible (no firewall blocking)
+- [ ] If nothing answers: `ping <mixer-ip>` and check the firewall allows UDP
 
-## First Development Run
+## First Run Against Real Hardware
 
 - [ ] Run `npm run dev`
-- [ ] Verify backend starts (http://localhost:8000)
-- [ ] Verify frontend starts (http://localhost:5173)
-- [ ] Verify Electron window opens
-- [ ] Connect to mixer in app
-- [ ] Test manual fader control
-- [ ] Test AI mode with live audio
+- [ ] Connect to mixer in app: header shows "Mixer Connected"
+- [ ] Meters move with signal on each channel
+- [ ] Channel names and fader positions match the console
+- [ ] Moving a fader in the app moves it on the console, and vice versa
+- [ ] Check whether channel meters change when a fader moves; set **Mixer Meter Tap** in AI Settings accordingly
+- [ ] Test AI mode with live audio, starting with a small **Max Cut** (e.g. 6 dB)
+- [ ] Unplug the network cable: header shows "Mixer Not Responding", AI holds; plug back: recovers
 
 ## Optional: Production Build
 
-- [ ] Create icon.ico (required for branded installer)
 - [ ] Update version number in `package.json`
 - [ ] Build installer: `npm run build:win`
-- [ ] Test installer on clean machine
-- [ ] Verify Python backend starts automatically
-- [ ] Verify app connects to mixer
+- [ ] Test installer on a clean machine (no Node, no Python)
 
 ## Future Enhancements (Ideas)
 
+- [ ] Web server mode to control from a phone/tablet on the same network
+- [ ] Auto-detect pre/post-fader meter tap
+- [ ] Bus/aux send control (monitor mixes)
+- [ ] Scene save/load on the console
 - [ ] Add Yamaha CL/QL adapter
 - [ ] Add Allen & Heath SQ adapter
-- [ ] Implement scene save/load
-- [ ] Add machine learning models
-- [ ] Create mobile companion app
-- [ ] Add cloud settings sync
-- [ ] Implement multi-mixer control
-- [ ] Add advanced visualizations (spectrograms, etc.)
-- [ ] Create plugin system for custom processing
-- [ ] Add MIDI controller support
-
-## Documentation
-
-- [ ] Review CLAUDE.md for architecture details
-- [ ] Read QUICKSTART.md for basic usage
-- [ ] Check API documentation in CLAUDE.md
-
-## Known Issues to Address
-
-- [ ] Add error handling for mixer disconnection
-- [ ] Implement reconnection logic
-- [ ] Add user preferences persistence
-- [ ] Improve meter visualization performance
-- [ ] Add keyboard shortcuts
-- [ ] Implement undo/redo for manual adjustments
+- [ ] Multi-mixer control
+- [ ] MIDI controller support
 
 ---
 
-Last updated: 2026-07-03
+Last updated: 2026-10-13
